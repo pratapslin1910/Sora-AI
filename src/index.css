@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+:root {
+  --bg-main: #000000;
+  --bg-app: #080808;
+  --bg-panel: #0d0d0d;
+  --bg-elevated: #141414;
+  --border-terminal: #222222;
+  --border-subtle: #1a1a1a;
+  --border-active: #383838;
+  --text-primary: #F4F4F5;
+  --text-secondary: #A1A1AA;
+  --text-muted: #71717A;
+  --accent-white: #FFFFFF;
+  --accent-neutral: #27272A;
+  --logo-blue: #2684FF;
+  --live-green: #00D99A;
+  --critical-red: #FF384C;
+  --elevated-orange: #FF981F;
+  --monitoring-yellow: #FFD52A;
+  --cyber-purple: #B36CFF;
+  --route-cyan: #00D5FF;
+}
+
+@layer base {
+  body {
+    background-color: #000000;
+    color: #F4F4F5;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    overflow: hidden;
+    user-select: none;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Monospace font utility for coordinates, numbers, timestamps */
+.font-mono-terminal {
+  font-family: "JetBrains Mono", "Fira Code", "Roboto Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* Custom Scrollbar for dense terminal */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: #000000;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #222222;
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #333333;
+}
+
+@keyframes statusBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.live-blink {
+  animation: statusBlink 2s infinite ease-in-out;
+}
+
+@keyframes audioPulse {
+  0%, 100% { transform: scaleY(0.4); opacity: 0.5; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
+
+.audio-bar-1 { animation: audioPulse 0.8s ease-in-out infinite; }
+.audio-bar-2 { animation: audioPulse 0.6s ease-in-out infinite 0.15s; }
+.audio-bar-3 { animation: audioPulse 0.9s ease-in-out infinite 0.3s; }
+
+@keyframes thoughtShimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.thinking-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.02) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
+  background-size: 200% 100%;
+  animation: thoughtShimmer 2.5s infinite;
+}

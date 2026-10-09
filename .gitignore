@@ -1,0 +1,111 @@
+﻿# =============================================================================
+# Sora V1 — .gitignore
+# =============================================================================
+
+# ── Node / npm ────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-store/
+.yarn/
+
+# ── Build outputs ─────────────────────────────────────────────────────────────
+dist/
+dist-ssr/
+build/
+out/
+.vite/
+*.tsbuildinfo
+
+# ── Environment & secrets ─────────────────────────────────────────────────────
+# .env.example is INTENTIONALLY tracked (template for new devs)
+.env
+.env.*
+!.env.example
+*.local
+
+# ── LanceDB & Vector DB runtime data ──────────────────────────────────────────
+# These directories are created at runtime and must NOT be committed.
+lancedb_data/
+chats.lance/
+memories.lance/
+*.lance
+*.lancedb
+
+# ── Antigravity IDE local agent runtime data ──────────────────────────────────
+# .agents/ (skill definitions) IS tracked — it is source code.
+# Only exclude the runtime scratch sub-directory inside it.
+.agents/scratch/
+
+# ── OS artifacts ──────────────────────────────────────────────────────────────
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+# Linux
+*~
+.fuse_hidden*
+.Trash-*
+.nfs*
+
+# ── IDE / editor configs ──────────────────────────────────────────────────────
+# .vscode/settings.json is INTENTIONALLY tracked (project-specific css.lint rule).
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+.idea/
+*.suo
+*.user
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ── TypeScript source maps ────────────────────────────────────────────────────
+*.js.map
+*.d.ts.map
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log
+*.log.*
+
+# ── Test & coverage artifacts ─────────────────────────────────────────────────
+coverage/
+.nyc_output/
+*.lcov
+
+# ── Temporary / scratch / backup files ────────────────────────────────────────
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.orig
+*.rej
+
+# ── Package manager alternate locks ───────────────────────────────────────────
+# package-lock.json is kept (npm). Yarn/pnpm locks are excluded.
+yarn.lock
+pnpm-lock.yaml
+
+# ── Misc cache ────────────────────────────────────────────────────────────────
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+*.pid
+*.seed
+*.pid.lock

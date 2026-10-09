@@ -1,0 +1,1907 @@
+import { useState, useEffect, useRef, useCallback } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import {
+  Container,
+  IconButton,
+  Avatar,
+  List,
+  ListItemButton,
+  ListItemText,
+  Tooltip,
+  CircularProgress,
+  Dialog,
+} from '@mui/material';
+import SendIcon from '@mui/icons-material/Send';
+import StopIcon from '@mui/icons-material/Stop';
+import SmartToyIcon from '@mui/icons-material/SmartToy';
+import PersonIcon from '@mui/icons-material/Person';
+import AddIcon from '@mui/icons-material/Add';
+import MicIcon from '@mui/icons-material/Mic';
+import AttachFileIcon from '@mui/icons-material/AttachFile';
+import SearchIcon from '@mui/icons-material/Search';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
+import ChatBubbleOutlinedIcon from '@mui/icons-material/ChatBubbleOutlined';
+import PushPinIcon from '@mui/icons-material/PushPin';
+import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
+import PsychologyIcon from '@mui/icons-material/Psychology';
+import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
+import PsychologyAltIcon from '@mui/icons-material/PsychologyAlt';
+import BookmarkAddIcon from '@mui/icons-material/BookmarkAdd';
+import BookmarkRemoveIcon from '@mui/icons-material/BookmarkRemove';
+import VolumeUpIcon from '@mui/icons-material/VolumeUp';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import CheckIcon from '@mui/icons-material/Check';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import GraphicEqIcon from '@mui/icons-material/GraphicEq';
+import TravelExploreIcon from '@mui/icons-material/TravelExplore';
+import CloseIcon from '@mui/icons-material/Close';
+import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import MenuBookIcon from '@mui/icons-material/MenuBook';
+import {
+  ChatMessage,
+  GatewayHealth,
+  ChatSession,
+  WebSearchResult,
+  MemoryItem,
+  RecalledContextPayload,
+  checkGatewayHealth,
+  streamChatMessage,
+  listChatHistory,
+  saveChatSession,
+  deleteChatSession,
+  searchChatHistory,
+  fetchWebSearch,
+  readSiteUrl,
+  listMemories,
+  saveMemory,
+  deleteMemory,
+} from './services/chatService';
+
+export interface AttachedFileInfo {
+  id: string;
+  name: string;
+  size: number;
+  content: string;
+  type: string;
+}
+
+interface MessageWithThinking extends ChatMessage {
+  thinkingLog?: string[];
+  thoughtDuration?: number;
+  isThinkingOpen?: boolean;
+  attachedFiles?: Array<{ name: string; size: number }>;
+  webSources?: WebSearchResult[];
+  isWebSourcesOpen?: boolean;
+}
+
+/** Format ISO timestamp to a readable relative/absolute label */
+function formatDate(iso: string): string {
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const diffMs = now.getTime() - d.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHrs = Math.floor(diffMins / 60);
+    if (diffHrs < 24) return `${diffHrs}h ago`;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  } catch {
+    return iso.slice(0, 10);
+  }
+}
+
+/** Format file byte size into readable unit */
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Rich Markdown renderer with enlarged, elegant typography & clear lists */
+const MarkdownContent = ({ content }: { content: string }) => {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ children }) => (
+          <p className="mb-3.5 last:mb-0 leading-[1.85] text-[16px] text-slate-100 font-normal">
+            {children}
+          </p>
+        ),
+        strong: ({ children }) => (
+          <strong className="font-bold text-white tracking-wide">
+            {children}
+          </strong>
+        ),
+        em: ({ children }) => (
+          <em className="italic text-slate-200">
+            {children}
+          </em>
+        ),
+        ul: ({ children }) => (
+          <ul className="my-3.5 pl-6 list-disc space-y-2 text-[16px] text-slate-100 marker:text-blue-400 marker:font-bold">
+            {children}
+          </ul>
+        ),
+        ol: ({ children }) => (
+          <ol className="my-3.5 pl-6 list-decimal space-y-2 text-[16px] text-slate-100 marker:text-blue-400 marker:font-bold">
+            {children}
+          </ol>
+        ),
+        li: ({ children }) => (
+          <li className="leading-relaxed pl-1 text-[16px] text-slate-200">
+            {children}
+          </li>
+        ),
+        h1: ({ children }) => (
+          <h1 className="text-2xl font-bold text-white mt-5 mb-2.5 tracking-tight">
+            {children}
+          </h1>
+        ),
+        h2: ({ children }) => (
+          <h2 className="text-xl font-bold text-blue-200 mt-4 mb-2 tracking-tight">
+            {children}
+          </h2>
+        ),
+        h3: ({ children }) => (
+          <h3 className="text-lg font-semibold text-cyan-200 mt-3 mb-1.5">
+            {children}
+          </h3>
+        ),
+        blockquote: ({ children }) => (
+          <blockquote className="my-3 pl-4 border-l-2 border-blue-400/60 italic text-slate-300 bg-blue-500/[0.04] py-1.5 rounded-r-lg">
+            {children}
+          </blockquote>
+        ),
+        code: ({ className, children, ...props }: any) => {
+          const isInline = !className && typeof children === 'string' && !children.includes('\n');
+          if (isInline) {
+            return (
+              <code className="px-1.5 py-0.5 rounded bg-blue-950/40 text-cyan-300 font-mono text-[14px] border border-blue-500/20">
+                {children}
+              </code>
+            );
+          }
+          return (
+            <div className="my-3.5 rounded-xl bg-[#080b13] border border-white/[0.08] overflow-hidden text-[13.5px]">
+              <pre className="p-4 overflow-x-auto font-mono text-cyan-200 leading-relaxed selection:bg-blue-500/30">
+                <code {...props}>{children}</code>
+              </pre>
+            </div>
+          );
+        },
+        hr: () => <hr className="my-4 border-white/[0.08]" />,
+        table: ({ children }) => (
+          <div className="my-3 overflow-x-auto rounded-xl border border-white/[0.08]">
+            <table className="w-full text-left text-sm border-collapse">{children}</table>
+          </div>
+        ),
+        th: ({ children }) => (
+          <th className="p-2.5 bg-white/[0.04] border-b border-white/[0.08] font-semibold text-white">
+            {children}
+          </th>
+        ),
+        td: ({ children }) => (
+          <td className="p-2.5 border-b border-white/[0.04] text-slate-300">
+            {children}
+          </td>
+        ),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+};
+
+
+export interface SoraChatProps {
+  initialPrompt?: string;
+  onClearInitialPrompt?: () => void;
+}
+
+const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) => {
+  const [messages, setMessages] = useState<MessageWithThinking[]>([]);
+  const [input, setInput] = useState('');
+
+  useEffect(() => {
+    if (initialPrompt) {
+      setInput(initialPrompt);
+      onClearInitialPrompt?.();
+    }
+  }, [initialPrompt, onClearInitialPrompt]);
+
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [gatewayStatus, setGatewayStatus] = useState<GatewayHealth>({
+    ok: false,
+    status: 'checking',
+    model: 'auto',
+  });
+
+  // Real-time Web Search toggle state
+  const [webSearchEnabled, setWebSearchEnabled] = useState<boolean>(false);
+
+  // ── Memory Bank state ────────────────────────────────────────────────────
+  const [memories, setMemories] = useState<MemoryItem[]>([]);
+  const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
+  const [memoryInput, setMemoryInput] = useState('');
+  const [memorySaveType, setMemorySaveType] = useState<MemoryItem['type']>('instruction');
+  const [lastRecalled, setLastRecalled] = useState<RecalledContextPayload | null>(null);
+
+  const loadMemories = useCallback(async () => {
+    try {
+      const list = await listMemories();
+      setMemories(list);
+    } catch {
+      setMemories([]);
+    }
+  }, []);
+
+  useEffect(() => { loadMemories(); }, [loadMemories]);
+
+  // Detail Site Preview state
+  const [previewSite, setPreviewSite] = useState<WebSearchResult | null>(null);
+  const [siteCopied, setSiteCopied] = useState<boolean>(false);
+
+  // File Attachments state
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFileInfo[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const newAttachments: AttachedFileInfo[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      try {
+        let textContent = '';
+        if (file.type.startsWith('image/')) {
+          textContent = `[Attached Image: ${file.name} (${formatFileSize(file.size)})]`;
+        } else {
+          // Read up to 256KB text content
+          textContent = await file.text();
+          if (textContent.length > 250000) {
+            textContent = textContent.slice(0, 250000) + '\n...[truncated large file content]';
+          }
+        }
+
+        newAttachments.push({
+          id: `file_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+          name: file.name,
+          size: file.size,
+          content: textContent,
+          type: file.type || 'text/plain',
+        });
+      } catch (err) {
+        console.error('File read error:', err);
+      }
+    }
+
+    setAttachedFiles((prev) => [...prev, ...newAttachments]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const removeAttachedFile = (id: string) => {
+    setAttachedFiles((prev) => prev.filter((f) => f.id !== id));
+  };
+
+  // Active chat session ID (null = new/unsaved chat)
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const activeChatIdRef = useRef<string | null>(null);
+  const isSavingRef = useRef<boolean>(false);
+
+  // Vector DB chat history
+  const [chatHistory, setChatHistory] = useState<ChatSession[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Pinned chats stored in localStorage
+  const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem('sora_pinned_chats');
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const togglePinChat = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    setPinnedIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id];
+      try {
+        localStorage.setItem('sora_pinned_chats', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const [isListening, setIsListening] = useState(false);
+  // Use a ref so the value can be mutated inside the speech API useEffect without stale closures
+  const speechSupportedRef = useRef<boolean>(
+    typeof window !== 'undefined' &&
+    Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition)
+  );
+  const speechRecognitionRef = useRef<any>(null);
+  const isListeningRef = useRef(false);
+
+  // Live thinking state
+  const [thinkingTimer, setThinkingTimer] = useState(0);
+  const thinkingIntervalRef = useRef<any>(null);
+  const [currentThinkingPhase, setCurrentThinkingPhase] = useState<string>('Analyzing query context...');
+
+  // Copied message state
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  // ── Load chat history from vector DB ──────────────────────────────────────
+  const loadHistory = useCallback(async (query?: string) => {
+    setHistoryLoading(true);
+    try {
+      const chats = query?.trim()
+        ? await searchChatHistory(query.trim())
+        : await listChatHistory();
+      setChatHistory(chats);
+    } catch {
+      setChatHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadHistory(); }, [loadHistory]);
+
+  // Debounced search handler
+  const handleSearchChange = (q: string) => {
+    setSearchQuery(q);
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    searchTimeoutRef.current = setTimeout(() => loadHistory(q || undefined), 350);
+  };
+
+  // Delete a chat from the sidebar and DB
+  const handleDeleteChat = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    if (activeChatIdRef.current === id || activeChatId === id) {
+      activeChatIdRef.current = null;
+      setActiveChatId(null);
+      setMessages([]);
+    }
+    setPinnedIds((prev) => {
+      const next = prev.filter((p) => p !== id);
+      try {
+        localStorage.setItem('sora_pinned_chats', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    await deleteChatSession(id);
+    await loadHistory(searchQuery || undefined);
+  };
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, currentThinkingPhase]);
+
+  const refreshHealth = async () => {
+    try {
+      const health = await checkGatewayHealth();
+      if (health && typeof health === 'object') {
+        setGatewayStatus(health);
+      }
+    } catch {
+      setGatewayStatus({
+        ok: false,
+        status: 'error',
+        error: 'Connection check failed',
+        model: 'auto',
+      });
+    }
+  };
+
+
+  useEffect(() => {
+    let isMounted = true;
+    checkGatewayHealth()
+      .then((health) => {
+        if (isMounted && health) setGatewayStatus(health);
+      })
+      .catch(() => {});
+
+    const interval = setInterval(() => {
+      checkGatewayHealth()
+        .then((health) => {
+          if (isMounted && health) setGatewayStatus(health);
+        })
+        .catch(() => {});
+    }, 20000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Initialize Web Speech API for hands-free audio input
+  useEffect(() => {
+    const SpeechRecognitionAPI =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognitionAPI) {
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognitionAPI();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = (event: any) => {
+        let finalTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const item = event.results[i];
+          if (item.isFinal) {
+            finalTranscript += item[0].transcript;
+          }
+        }
+        if (finalTranscript.trim()) {
+          setInput((prev) => {
+            const separator = prev && !prev.endsWith(' ') ? ' ' : '';
+            return prev + separator + finalTranscript.trim();
+          });
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          setIsListening(false);
+          isListeningRef.current = false;
+        }
+      };
+
+      recognition.onend = () => {
+        // If still supposed to be listening, automatically restart (ambient dictation)
+        if (isListeningRef.current) {
+          try {
+            recognition.start();
+          } catch {
+            // ignore
+          }
+        } else {
+          setIsListening(false);
+        }
+      };
+
+      speechRecognitionRef.current = recognition;
+    } catch {
+      // If the recognition object fails to instantiate, mark as unsupported
+      speechSupportedRef.current = false;
+    }
+
+    return () => {
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch {}
+      }
+    };
+  }, []);
+
+  const toggleListening = () => {
+    if (!speechSupportedRef.current || !speechRecognitionRef.current) {
+      alert('Speech recognition is not supported in this browser. You can type directly into the input.');
+      return;
+    }
+
+    if (isListening) {
+      isListeningRef.current = false;
+      setIsListening(false);
+      try {
+        speechRecognitionRef.current.stop();
+      } catch {}
+    } else {
+      isListeningRef.current = true;
+      setIsListening(true);
+      try {
+        speechRecognitionRef.current.start();
+      } catch {
+        isListeningRef.current = false;
+        setIsListening(false);
+      }
+    }
+  };
+
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    if (thinkingIntervalRef.current) {
+      clearInterval(thinkingIntervalRef.current);
+    }
+    setIsStreaming(false);
+  };
+
+  const handleSend = async () => {
+    const trimmedInput = input.trim();
+    if ((!trimmedInput && attachedFiles.length === 0) || isStreaming) return;
+
+    // Build the user message prompt content and metadata
+    let promptContent = trimmedInput;
+    if (attachedFiles.length > 0) {
+      const attachmentsBlock = attachedFiles
+        .map((f) => `[ATTACHED FILE: ${f.name}]\n\`\`\`\n${f.content}\n\`\`\``)
+        .join('\n\n');
+      promptContent = trimmedInput
+        ? `${trimmedInput}\n\n${attachmentsBlock}`
+        : `Please inspect and analyze the attached file(s):\n\n${attachmentsBlock}`;
+    }
+
+    const currentAttachments = attachedFiles.map((f) => ({ name: f.name, size: f.size }));
+    const userMsg: MessageWithThinking = {
+      role: 'user',
+      content: promptContent,
+      attachedFiles: currentAttachments.length ? currentAttachments : undefined,
+    };
+    const newHistory = [...messages, userMsg];
+
+    // Clear input and attached files tray immediately
+    setInput('');
+    setAttachedFiles([]);
+    setIsStreaming(true);
+    setThinkingTimer(0);
+
+    // Initial thinking steps
+    const defaultThinkingSteps = [
+      webSearchEnabled
+        ? `Connecting to real-time search engine for "${trimmedInput.slice(0, 40)}"...`
+        : 'Deconstructing trading query & financial instrument intent...',
+      'Retrieving algorithmic market rules & risk parameters...',
+      'Synthesizing real-time analytical response...',
+    ];
+
+    setCurrentThinkingPhase(defaultThinkingSteps[0]);
+
+    // Live thinking elapsed timer
+    const startTime = Date.now();
+    thinkingIntervalRef.current = setInterval(() => {
+      const elapsed = Math.round((Date.now() - startTime) / 100) / 10;
+      setThinkingTimer(elapsed);
+
+      if (elapsed > 0.8 && elapsed < 2.0) {
+        setCurrentThinkingPhase(defaultThinkingSteps[1]);
+        setMessages((prev) => {
+          const updated = [...prev];
+          const lastIdx = updated.length - 1;
+          if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+            const logs = updated[lastIdx].thinkingLog || [];
+            if (!logs.includes(defaultThinkingSteps[1])) {
+              updated[lastIdx] = {
+                ...updated[lastIdx],
+                thinkingLog: [...logs, defaultThinkingSteps[1]],
+              };
+            }
+          }
+          return updated;
+        });
+      } else if (elapsed >= 2.0) {
+        setCurrentThinkingPhase(defaultThinkingSteps[2]);
+        setMessages((prev) => {
+          const updated = [...prev];
+          const lastIdx = updated.length - 1;
+          if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+            const logs = updated[lastIdx].thinkingLog || [];
+            if (!logs.includes(defaultThinkingSteps[2])) {
+              updated[lastIdx] = {
+                ...updated[lastIdx],
+                thinkingLog: [...logs, defaultThinkingSteps[2]],
+              };
+            }
+          }
+          return updated;
+        });
+      }
+    }, 100);
+
+    // 1. Detect explicit URLs in user prompt (e.g., "read https://...", "summarize https://...")
+    const urlRegex = /(https?:\/\/[^\s<>"{}|\\^`]+)/gi;
+    const explicitUrls = trimmedInput.match(urlRegex) || [];
+
+    // Execute live web search or deep site reading
+    let foundWebSources: WebSearchResult[] = [];
+
+    // If explicit URLs are detected in user input, read them directly
+    if (explicitUrls.length > 0) {
+      try {
+        const readDirect = await Promise.allSettled(
+          explicitUrls.slice(0, 3).map((u) => readSiteUrl(u))
+        );
+        for (const res of readDirect) {
+          if (res.status === 'fulfilled' && res.value) {
+            foundWebSources.push(res.value);
+          }
+        }
+      } catch (err) {
+        console.warn('Direct site reading error:', err);
+      }
+    }
+
+    // If web search is enabled, execute search with deep site reading
+    if (webSearchEnabled && trimmedInput) {
+      try {
+        const searchResults = await fetchWebSearch(trimmedInput, true);
+        for (const sr of searchResults) {
+          if (!foundWebSources.some((existing) => existing.url === sr.url)) {
+            foundWebSources.push(sr);
+          }
+        }
+      } catch (err) {
+        console.warn('Web search error:', err);
+      }
+    }
+
+    const sitesReadCount = foundWebSources.filter((s) => s.readSuccess && s.content).length;
+    const totalWordsRead = foundWebSources.reduce((acc, s) => acc + (s.wordCount || 0), 0);
+
+    const initialThinkingSteps = [];
+    if (foundWebSources.length > 0) {
+      initialThinkingSteps.push(`Discovered ${foundWebSources.length} real-time web sources for "${trimmedInput.slice(0, 35)}"`);
+      if (sitesReadCount > 0) {
+        initialThinkingSteps.push(`Deeply read & extracted ${sitesReadCount} websites (${totalWordsRead.toLocaleString()} words analyzed)`);
+      }
+    } else {
+      initialThinkingSteps.push(defaultThinkingSteps[0]);
+    }
+
+    const assistantPlaceholder: MessageWithThinking = {
+      role: 'assistant',
+      content: '',
+      thinkingLog: initialThinkingSteps,
+      thoughtDuration: 0,
+      isThinkingOpen: true,
+      webSources: foundWebSources.length ? foundWebSources : undefined,
+      isWebSourcesOpen: true,
+    };
+
+    setMessages([...newHistory, assistantPlaceholder]);
+
+    // Prepare messages to send to LLM with full site reading context
+    const messagesToSend = newHistory.map((m) => ({ role: m.role, content: m.content }));
+    if (foundWebSources.length > 0) {
+      const sourcesContext = foundWebSources
+        .map((s, idx) => {
+          if (s.readSuccess && s.content) {
+            return `[SOURCE ${idx + 1} - SITE READ SUCCESSFULLY]: ${s.title}\nURL: ${s.url}\nSite: ${s.siteName || ''}\nExtracted Word Count: ${s.wordCount || ''}\nACTUAL EXTRACTED PAGE CONTENT:\n${s.content}`;
+          }
+          return `[SOURCE ${idx + 1}]: ${s.title}\nURL: ${s.url}\nSnippet: ${s.snippet || s.preview || ''}`;
+        })
+        .join('\n\n---\n\n');
+
+      const lastIdx = messagesToSend.length - 1;
+      messagesToSend[lastIdx] = {
+        role: 'user',
+        content: `${messagesToSend[lastIdx].content}\n\n[REAL-TIME LIVE WEB INTELLIGENCE & DEEP SITE CONTENT]:\n${sourcesContext}\n\n(Instruction: Synthesize the deeply read website facts and data above to give an accurate, detailed, and comprehensive answer, quoting specific details from the sources and citing source URLs.)`,
+      };
+    }
+
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    // Send history to backend
+    await streamChatMessage(
+      messagesToSend,
+      {
+        signal: abortController.signal,
+        recallMemory: true,
+        currentChatId: activeChatIdRef.current,
+        onRecall: (recalled) => {
+          setLastRecalled(recalled);
+        },
+        onMemorySaved: () => {
+          // Silently refresh memory list when new memories are auto-saved
+          loadMemories();
+        },
+        onToken: (token) => {
+          setMessages((prev) => {
+            const updated = [...prev];
+            const lastIdx = updated.length - 1;
+            if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+              const prevContent = updated[lastIdx].content;
+              updated[lastIdx] = {
+                ...updated[lastIdx],
+                content: prevContent + token,
+              };
+            }
+            return updated;
+          });
+        },
+        onDone: () => {
+          const finalDuration = Math.round((Date.now() - startTime) / 100) / 10;
+          if (thinkingIntervalRef.current) {
+            clearInterval(thinkingIntervalRef.current);
+          }
+          setMessages((prev) => {
+            const updated = [...prev];
+            const lastIdx = updated.length - 1;
+            if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+              updated[lastIdx] = { ...updated[lastIdx], thoughtDuration: finalDuration };
+            }
+            // Auto-save the completed conversation to vector DB
+            const cleanMessages = updated.map((m) => ({ role: m.role, content: m.content }));
+            const currentId = activeChatIdRef.current;
+            if (!isSavingRef.current) {
+              isSavingRef.current = true;
+              saveChatSession({ id: currentId ?? undefined, messages: cleanMessages })
+                .then((saved) => {
+                  if (saved) {
+                    activeChatIdRef.current = saved.id;
+                    setActiveChatId(saved.id);
+                  }
+                  loadHistory();
+                })
+                .catch(() => {})
+                .finally(() => {
+                  setTimeout(() => {
+                    isSavingRef.current = false;
+                  }, 600);
+                });
+            }
+            return updated;
+          });
+          setIsStreaming(false);
+          abortControllerRef.current = null;
+        },
+        onError: (errMsg) => {
+          if (thinkingIntervalRef.current) {
+            clearInterval(thinkingIntervalRef.current);
+          }
+          setMessages((prev) => {
+            const updated = [...prev];
+            const lastIdx = updated.length - 1;
+            if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+              const currentContent = updated[lastIdx].content;
+              updated[lastIdx] = {
+                ...updated[lastIdx],
+                content: currentContent
+                  ? `${currentContent}\n\n⚠️ ${errMsg}`
+                  : `⚠️ ${errMsg}`,
+              };
+            }
+            return updated;
+          });
+          setIsStreaming(false);
+          abortControllerRef.current = null;
+          refreshHealth();
+        },
+      }
+    );
+  };
+
+  const handleNewChat = () => {
+    if (isStreaming) {
+      handleStop();
+    }
+    activeChatIdRef.current = null;
+    setActiveChatId(null);
+    setMessages([]);
+    setInput('');
+  };
+
+  const handleSelectHistoryChat = (chatItem: ChatSession) => {
+    if (isStreaming) handleStop();
+    activeChatIdRef.current = chatItem.id;
+    setActiveChatId(chatItem.id);
+    setMessages(chatItem.messages || []);
+    setInput('');
+  };
+
+  const toggleThinkingLog = (index: number) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      if (updated[index]) {
+        updated[index] = {
+          ...updated[index],
+          isThinkingOpen: !updated[index].isThinkingOpen,
+        };
+      }
+      return updated;
+    });
+  };
+
+  const copyToClipboard = (text: string, index: number) => {
+    navigator.clipboard.writeText(text);
+    setCopiedIndex(index);
+    setTimeout(() => setCopiedIndex(null), 2000);
+  };
+
+  // Preload and select natural female speech synthesis voice
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.getVoices();
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.getVoices();
+      };
+    }
+  }, []);
+
+  const getFemaleVoice = (): SpeechSynthesisVoice | null => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
+    const voices = window.speechSynthesis.getVoices();
+    if (!voices || voices.length === 0) return null;
+
+    // Prioritized regex for recognized female voices (e.g. Windows Microsoft Zira, Edge Jenny/Aria, Mac Samantha)
+    const femaleNameRegex = /zira|jenny|aria|samantha|victoria|karen|eva|ava|hazel|susan|catherine|female|woman/i;
+    const exactFemale = voices.find((v) => femaleNameRegex.test(v.name) || femaleNameRegex.test(v.voiceURI));
+    if (exactFemale) return exactFemale;
+
+    // Secondary: English voices
+    const enVoices = voices.filter((v) => v.lang.startsWith('en'));
+    const enFemale = enVoices.find((v) => (v as any).gender === 'female' || femaleNameRegex.test(v.name));
+    if (enFemale) return enFemale;
+
+    return enVoices[0] || voices[0] || null;
+  };
+
+  const speakText = (text: string) => {
+    if (!('speechSynthesis' in window)) return;
+    window.speechSynthesis.cancel();
+    // Clean markdown hashes and asterisks for natural reading
+    const cleanText = text.replace(/[#*`_]/g, '').trim();
+    if (!cleanText) return;
+
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    const femaleVoice = getFemaleVoice();
+    if (femaleVoice) {
+      utterance.voice = femaleVoice;
+    }
+    utterance.pitch = 1.18; // Soft, natural female pitch
+    utterance.rate = 1.0;
+    window.speechSynthesis.speak(utterance);
+  };
+
+  // Helper to extract <think> blocks if produced by reasoning models
+  const parseThinkingContent = (content: string) => {
+    const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/);
+    if (thinkMatch) {
+      const extractedThought = thinkMatch[1].trim();
+      const cleanContent = content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+      return { extractedThought, cleanContent };
+    }
+    return { extractedThought: null, cleanContent: content };
+  };
+
+  return (
+    <div className="flex h-full w-full bg-[#080808] text-[#e4e4e7] overflow-hidden">
+      {/* Sidebar with Obsidian Black & Charcoal styling */}
+      <aside className="relative z-10 flex-shrink-0 w-64 bg-[#0a0a0a] border-r border-[#222222] flex flex-col h-full select-none">
+        {/* Top: New Chat Button & Search */}
+        <div className="p-3 pb-2 flex flex-col gap-2 shrink-0">
+          <button
+            onClick={handleNewChat}
+            className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg bg-[#141414] hover:bg-[#1c1c1c] border border-[#262626] hover:border-[#383838] text-[#FFFFFF] transition-all shadow-sm group"
+          >
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 rounded-md bg-[#222222] flex items-center justify-center text-[#FFFFFF] group-hover:scale-105 transition-transform">
+                <AddIcon sx={{ fontSize: 15 }} />
+              </div>
+              <span className="text-xs font-semibold text-[#FFFFFF]">
+                New Chat
+              </span>
+            </div>
+            <span className="text-[10px] text-[#71717A] font-mono">⌘N</span>
+          </button>
+
+          {/* Search bar */}
+          <div className="relative">
+            <SearchIcon
+              sx={{ fontSize: 14, position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)' }}
+              className="text-[#71717A]"
+            />
+            <input
+              value={searchQuery}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              placeholder="Search chats..."
+              className="w-full bg-[#121212] border border-[#222222] focus:border-[#383838] rounded-lg pl-8 pr-3 py-1.5 text-xs text-[#E4E4E7] placeholder-[#71717A] outline-none transition-colors"
+            />
+          </div>
+        </div>
+
+        {/* Chat Navigation: Live Vector DB History (expands in middle) */}
+        <div className="flex-1 overflow-y-auto px-2 min-h-0 space-y-1 custom-scrollbar">
+          {!historyLoading && chatHistory.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-8 text-center">
+              <ChatBubbleOutlinedIcon sx={{ fontSize: 24 }} className="text-[#52525B] mb-2" />
+              <p className="text-[11px] text-[#71717A]">
+                {searchQuery ? 'No matching chats found' : 'No saved chats yet'}
+              </p>
+              <p className="text-[10px] text-[#52525B] mt-1">Start a conversation to save it</p>
+            </div>
+          )}
+
+          {/* Helper renderer for individual chat item */}
+          {(() => {
+            const renderChatItem = (chat: ChatSession, isPinned: boolean) => {
+              const isActive = activeChatId === chat.id;
+              return (
+                <ListItemButton
+                  key={chat.id}
+                  onClick={() => handleSelectHistoryChat(chat)}
+                  sx={{
+                    px: 1.5,
+                    py: 0.8,
+                    borderRadius: '8px',
+                    backgroundColor: isActive ? '#1c1c1c' : 'transparent',
+                    border: isActive ? '1px solid #383838' : '1px solid transparent',
+                    '&:hover': {
+                      backgroundColor: isActive ? '#222222' : '#141414',
+                      '& .item-actions': { opacity: 1 },
+                    },
+                    mb: 0.3,
+                  }}
+                  className="group transition-all duration-150"
+                >
+                  <ListItemText
+                    primary={
+                      <div className="flex items-center justify-between gap-1 w-full">
+                        <div className="flex flex-col min-w-0 flex-1 mr-1">
+                          <span
+                            className={`text-xs font-medium truncate ${
+                              isActive ? 'text-white font-semibold' : 'text-[#A1A1AA] group-hover:text-white'
+                            }`}
+                          >
+                            {chat.title}
+                          </span>
+                          <span className="text-[10px] text-[#71717A] font-mono mt-0.5">
+                            {formatDate(chat.updated_at)}
+                          </span>
+                        </div>
+
+                        {/* Action buttons (Pin + Delete) */}
+                        <div className="item-actions opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity flex-shrink-0">
+                          <Tooltip title={isPinned ? 'Unpin chat' : 'Pin chat'} arrow placement="top">
+                            <span
+                              className="p-1 rounded hover:bg-white/[0.08] cursor-pointer inline-flex items-center justify-center transition-colors"
+                              onClick={(e) => togglePinChat(e, chat.id)}
+                            >
+                              {isPinned ? (
+                                <PushPinIcon sx={{ fontSize: 13, color: '#A1A1AA' }} />
+                              ) : (
+                                <PushPinOutlinedIcon sx={{ fontSize: 13, color: '#71717A', '&:hover': { color: '#FFFFFF' } }} />
+                              )}
+                            </span>
+                          </Tooltip>
+
+                          <Tooltip title="Delete chat" arrow placement="top">
+                            <span
+                              className="p-1 rounded hover:bg-rose-500/10 cursor-pointer inline-flex items-center justify-center transition-colors"
+                              onClick={(e) => handleDeleteChat(e, chat.id)}
+                            >
+                              <DeleteOutlineIcon
+                                sx={{ fontSize: 13, color: 'rgba(248,113,113,0.7)', '&:hover': { color: '#f87171' } }}
+                              />
+                            </span>
+                          </Tooltip>
+                        </div>
+                      </div>
+                    }
+                    disableTypography
+                  />
+                </ListItemButton>
+              );
+            };
+
+            // When user is searching via vector search
+            if (searchQuery.trim()) {
+              return (
+                <div>
+                  <div className="flex items-center gap-1.5 px-1 py-1 mb-1">
+                    <SearchIcon sx={{ fontSize: 13 }} className="text-[#A1A1AA]" />
+                    <span className="text-[10px] font-bold text-[#71717A] uppercase tracking-widest">
+                      Matches ({chatHistory.length})
+                    </span>
+                    {historyLoading && <CircularProgress size={10} sx={{ color: '#A1A1AA', ml: 'auto' }} />}
+                  </div>
+                  <List component="nav" disablePadding>
+                    {chatHistory.map((chat) => renderChatItem(chat, pinnedIds.includes(chat.id)))}
+                  </List>
+                </div>
+              );
+            }
+
+            const pinnedList = chatHistory.filter((c) => pinnedIds.includes(c.id));
+            const recentList = chatHistory.filter((c) => !pinnedIds.includes(c.id));
+
+            return (
+              <>
+                {/* Pinned section if any pinned */}
+                {pinnedList.length > 0 && (
+                  <div className="mb-2">
+                    <div className="flex items-center gap-1.5 px-1 py-1 mb-1">
+                      <PushPinIcon sx={{ fontSize: 12 }} className="text-[#A1A1AA] rotate-45" />
+                      <span className="text-[10px] font-bold text-[#71717A] uppercase tracking-widest">
+                        Pinned
+                      </span>
+                    </div>
+                    <List component="nav" disablePadding>
+                      {pinnedList.map((chat) => renderChatItem(chat, true))}
+                    </List>
+                  </div>
+                )}
+
+                {/* Recent section */}
+                {recentList.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-1.5 px-1 py-1 mb-1">
+                      <ChatBubbleOutlinedIcon sx={{ fontSize: 12 }} className="text-[#52525B]" />
+                      <span className="text-[10px] font-bold text-[#71717A] uppercase tracking-widest">
+                        Recent
+                      </span>
+                      {historyLoading && <CircularProgress size={10} sx={{ color: '#A1A1AA', ml: 'auto' }} />}
+                    </div>
+                    <List component="nav" disablePadding>
+                      {recentList.map((chat) => renderChatItem(chat, false))}
+                    </List>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </div>
+
+        {/* Memory Bank quick-add button PINNED CLEANLY AT THE BOTTOM */}
+        <div className="p-2.5 border-t border-[#222222] bg-[#0c0c0c] shrink-0 space-y-2">
+          <button
+            onClick={() => setMemoryPanelOpen(true)}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-[#141414] hover:bg-[#1a1a1a] border border-[#27272a] hover:border-[#383838] transition-all group"
+          >
+            <PsychologyAltIcon sx={{ fontSize: 16 }} className="text-[#A1A1AA] group-hover:text-white flex-shrink-0" />
+            <span className="text-xs text-[#D4D4D8] flex-1 text-left font-medium group-hover:text-white">Memory Bank</span>
+            {memories.length > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full bg-[#222222] text-[10px] font-bold text-[#E4E4E7] border border-[#333333]">{memories.length}</span>
+            )}
+          </button>
+
+          <div className="flex items-center justify-between px-1 text-[10px] font-mono-terminal text-[#71717A]">
+            <div className="flex items-center gap-1.5">
+              <span className={`w-1.5 h-1.5 rounded-full ${gatewayStatus.ok ? 'bg-[#00D99A]' : 'bg-[#FF981F]'}`} />
+              <span className="truncate max-w-[130px]">{gatewayStatus.model || 'auto'}</span>
+            </div>
+            <span className={gatewayStatus.ok ? 'text-[#00D99A]' : 'text-[#FF981F]'}>
+              {gatewayStatus.ok ? 'Online' : 'Standby'}
+            </span>
+          </div>
+        </div>
+      </aside>
+
+      {/* Main Chat Interface */}
+      <main className="relative z-10 flex-1 flex flex-col h-full bg-[#08090e]/95 backdrop-blur-xl overflow-hidden">
+        {/* Messages Stream Container */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+          <Container maxWidth="md" disableGutters>
+            {messages.length === 0 ? (
+              <div className="flex flex-col items-center justify-center min-h-[58vh] text-center px-4 animate-fade-in my-auto">
+                {/* Glowing emblem */}
+                {/* Ambient Neutral Center Icon */}
+                <div className="relative mb-6 mt-8">
+                  <div className="w-14 h-14 rounded-2xl bg-[#141414] border border-[#262626] shadow-lg flex items-center justify-center">
+                    <SmartToyIcon sx={{ fontSize: 28 }} className="text-[#E4E4E7]" />
+                  </div>
+                </div>
+
+                <h2 className="text-2xl font-bold text-white tracking-tight mb-2">
+                  How can Sora assist your trading today?
+                </h2>
+                <p className="text-sm text-[#A1A1AA] max-w-md leading-relaxed mb-8">
+                  Algorithmic trading insights, real-time market rule analysis, and autonomous strategy formulation.
+                </p>
+
+                {/* Quick prompt suggestion cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-lg text-left">
+                  {[
+                    { label: 'Market Analysis', text: 'Analyze BTC/USD current trend and key support levels' },
+                    { label: 'MT5 Strategy', text: 'Explain an effective RSI and MACD algorithmic setup' },
+                    { label: 'Risk Control', text: 'What are the top 3 risk management rules for day traders?' },
+                    { label: 'About Sora', text: 'Tell me about you in just 1 line' },
+                  ].map((item, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => {
+                        setInput(item.text);
+                      }}
+                      className="p-3.5 rounded-xl bg-[#101010] hover:bg-[#181818] border border-[#222222] hover:border-[#383838] text-left transition-all group flex flex-col justify-between"
+                    >
+                      <span className="text-[10px] font-semibold text-[#A1A1AA] tracking-wider uppercase mb-1">
+                        {item.label}
+                      </span>
+                      <span className="text-xs text-[#D4D4D8] group-hover:text-white line-clamp-2">
+                        {item.text}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              messages.map((msg, i) => {
+                const isAssistant = msg.role === 'assistant';
+                const { extractedThought, cleanContent } = isAssistant
+                  ? parseThinkingContent(msg.content)
+                  : { extractedThought: null, cleanContent: msg.content };
+
+              const hasThinkingContent =
+                isAssistant &&
+                (msg.thinkingLog?.length || extractedThought || (isStreaming && i === messages.length - 1));
+
+              return (
+                <div
+                  key={i}
+                  className={`flex w-full mb-6 ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in`}
+                >
+                  <div
+                    className={`flex items-start gap-3.5 ${
+                      msg.role === 'user' ? 'flex-row-reverse max-w-[85%]' : 'w-full max-w-full'
+                    }`}
+                  >
+                    {/* User / Assistant Avatar */}
+                    <Avatar
+                      sx={{
+                        width: 38,
+                        height: 38,
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                        border: isAssistant ? '1px solid rgba(59, 130, 246, 0.4)' : '1px solid rgba(255, 255, 255, 0.1)',
+                      }}
+                      className={
+                        isAssistant
+                          ? 'bg-gradient-to-br from-blue-600 via-indigo-600 to-cyan-600'
+                          : 'bg-gradient-to-br from-slate-700 to-slate-800'
+                      }
+                    >
+                      {isAssistant ? (
+                        <SmartToyIcon sx={{ fontSize: 20 }} className="text-white" />
+                      ) : (
+                        <PersonIcon sx={{ fontSize: 20 }} className="text-slate-300" />
+                      )}
+                    </Avatar>
+
+                    {/* Bubble Column */}
+                    <div className="flex flex-col gap-2 flex-1 min-w-0">
+                      {/* Name / Timestamp Tag */}
+                      <div
+                        className={`flex items-center gap-2 px-1 text-[11px] font-medium text-slate-400 ${
+                          msg.role === 'user' ? 'justify-end' : 'justify-start'
+                        }`}
+                      >
+                        <span className="font-semibold text-slate-300">
+                          {isAssistant ? 'Sora' : 'You'}
+                        </span>
+                        {isAssistant && msg.thoughtDuration ? (
+                          <span className="text-[10px] text-blue-400/80 font-mono">
+                            • {msg.thoughtDuration}s thinking
+                          </span>
+                        ) : null}
+                      </div>
+
+                      {/* SORA THINKING LOG - PURE TEXT ONLY (No Box, No Border, Ultra-Elegant) */}
+                      {hasThinkingContent ? (
+                        <div className="w-full my-1 text-xs select-none">
+                          <button
+                            type="button"
+                            onClick={() => toggleThinkingLog(i)}
+                            className="inline-flex items-center gap-2 text-slate-400 hover:text-blue-300 transition-colors py-1 cursor-pointer bg-transparent border-0 p-0 text-left"
+                          >
+                            <PsychologyIcon sx={{ fontSize: 16 }} className="text-blue-400" />
+                            <span className="font-medium text-slate-300 hover:text-blue-300 text-[13px]">
+                              {isStreaming && i === messages.length - 1
+                                ? `Thinking (${thinkingTimer}s)...`
+                                : `Thought for ${msg.thoughtDuration || 1}s`}
+                            </span>
+                            <span className="text-[11px] text-slate-500">
+                              {msg.isThinkingOpen !== false ? '• hide details' : '• view details'}
+                            </span>
+                            {msg.isThinkingOpen !== false ? (
+                              <ExpandLessIcon sx={{ fontSize: 15 }} className="text-slate-500" />
+                            ) : (
+                              <ExpandMoreIcon sx={{ fontSize: 15 }} className="text-slate-500" />
+                            )}
+                          </button>
+
+                          {/* Expanded Plain Text Details (Text only, subtle left accent line) */}
+                          {msg.isThinkingOpen !== false && (
+                            <div className="mt-1.5 ml-1 pl-3 border-l-2 border-blue-500/20 space-y-1 text-slate-400 text-[12.5px]">
+                              {msg.thinkingLog && msg.thinkingLog.length > 0 ? (
+                                msg.thinkingLog.map((step, sIdx) => (
+                                  <div key={sIdx} className="flex items-start gap-2 text-slate-300">
+                                    <span className="text-emerald-400 font-bold select-none text-[11px]">✓</span>
+                                    <span>{step}</span>
+                                  </div>
+                                ))
+                              ) : null}
+
+                              {/* Live active step while streaming */}
+                              {isStreaming && i === messages.length - 1 && (
+                                <div className="flex items-center gap-2 text-blue-400 animate-pulse pt-0.5">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                                  <span>{currentThinkingPhase}</span>
+                                </div>
+                              )}
+
+                              {/* Model's internal <think> chain if emitted */}
+                              {extractedThought && (
+                                <div className="mt-2 text-slate-400/90 text-[12px] italic leading-relaxed whitespace-pre-wrap">
+                                  {extractedThought}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
+
+                      {/* User Attached Files Badges (if any files were attached) */}
+                      {msg.role === 'user' && msg.attachedFiles && msg.attachedFiles.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 justify-end mb-1">
+                          {msg.attachedFiles.map((af, afIdx) => (
+                            <div
+                              key={afIdx}
+                              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-blue-900/40 border border-blue-400/30 text-xs text-blue-200 shadow-sm"
+                            >
+                              <InsertDriveFileOutlinedIcon sx={{ fontSize: 14, color: '#93c5fd' }} />
+                              <span className="font-semibold">{af.name}</span>
+                              <span className="text-[10px] text-blue-300/70 font-mono">({formatFileSize(af.size)})</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Assistant Collapsible Live Web Sources & Site Reader (Text-first, no bulky card) */}
+                      {isAssistant && msg.webSources && msg.webSources.length > 0 && (
+                        <div className="w-full my-2 text-xs select-none">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMessages((prev) => {
+                                const updated = [...prev];
+                                if (updated[i]) {
+                                  updated[i] = {
+                                    ...updated[i],
+                                    isWebSourcesOpen: updated[i].isWebSourcesOpen === false ? true : false,
+                                  };
+                                }
+                                return updated;
+                              });
+                            }}
+                            className="inline-flex items-center gap-1.5 text-cyan-400 hover:text-cyan-300 transition-colors py-1 cursor-pointer bg-transparent border-0 p-0 text-left"
+                          >
+                            <TravelExploreIcon sx={{ fontSize: 16 }} className="text-cyan-400" />
+                            <span className="font-semibold text-cyan-300 text-[12.5px]">
+                              Live Web & Site Reader ({msg.webSources.length} sources
+                              {msg.webSources.filter((s) => s.readSuccess).length > 0
+                                ? ` • ${msg.webSources.filter((s) => s.readSuccess).length} fully read`
+                                : ''})
+                            </span>
+                            <span className="text-[11px] text-cyan-500">
+                              {msg.isWebSourcesOpen !== false ? '• hide' : '• view details'}
+                            </span>
+                            {msg.isWebSourcesOpen !== false ? (
+                              <ExpandLessIcon sx={{ fontSize: 15 }} className="text-cyan-500" />
+                            ) : (
+                              <ExpandMoreIcon sx={{ fontSize: 15 }} className="text-cyan-500" />
+                            )}
+                          </button>
+
+                          {msg.isWebSourcesOpen !== false && (
+                            <div className="mt-2 ml-1 pl-3 border-l-2 border-cyan-500/25 space-y-2.5">
+                              {msg.webSources.map((source, sIdx) => (
+                                <div key={sIdx} className="space-y-1 text-left">
+                                  {/* Title row + Badges */}
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <a
+                                      href={source.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-cyan-200 hover:text-cyan-100 transition-colors group"
+                                    >
+                                      <OpenInNewIcon sx={{ fontSize: 12 }} className="text-cyan-400/70 group-hover:text-cyan-300 flex-shrink-0" />
+                                      <span className="underline underline-offset-2">{source.title}</span>
+                                    </a>
+
+                                    {/* Domain badge */}
+                                    {source.siteName && (
+                                      <span className="px-1.5 py-0.5 rounded bg-white/[0.05] text-[10.5px] text-slate-400 font-mono">
+                                        {source.siteName}
+                                      </span>
+                                    )}
+
+                                    {/* Read Status badge */}
+                                    {source.readSuccess ? (
+                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-[10px] text-emerald-300 font-medium">
+                                        <CheckIcon sx={{ fontSize: 10 }} />
+                                        <span>Read ({source.wordCount?.toLocaleString()} words)</span>
+                                      </span>
+                                    ) : null}
+
+                                    {/* Detail Preview button */}
+                                    <button
+                                      type="button"
+                                      onClick={() => setPreviewSite(source)}
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-cyan-950/60 hover:bg-cyan-900/80 border border-cyan-500/30 text-[11px] text-cyan-300 hover:text-cyan-100 transition-all cursor-pointer select-none ml-auto"
+                                    >
+                                      <MenuBookIcon sx={{ fontSize: 11 }} />
+                                      <span>Detail Preview</span>
+                                    </button>
+                                  </div>
+
+                                  {/* Detailed preview snippet */}
+                                  <p className="text-[11.5px] text-slate-400 leading-relaxed line-clamp-2 pl-4">
+                                    {source.preview || source.snippet}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Main Message Content */}
+                      {(cleanContent || (isStreaming && i === messages.length - 1)) && (
+                        msg.role === 'user' ? (
+                          <div className="self-end px-4 py-2.5 rounded-2xl rounded-tr-sm bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 text-white shadow-md shadow-blue-500/10 border border-blue-400/20 text-[15.5px] leading-relaxed whitespace-pre-wrap break-words max-w-full">
+                            {cleanContent}
+                          </div>
+                        ) : (
+                          <div className="w-full text-slate-100 break-words py-1">
+                            {cleanContent ? (
+                              <MarkdownContent content={cleanContent} />
+                            ) : (
+                              <div className="flex items-center gap-2 text-slate-400 py-1">
+                                <span className="inline-block w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+                                <span className="text-[14px]">Formulating response...</span>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      )}
+
+                      {/* Assistant action bar (Copy, Female Voice Text-to-speech speaker) */}
+                      {isAssistant && cleanContent && cleanContent.trim().length > 0 && (
+                        <div className="flex items-center gap-2 px-1 text-slate-500">
+                          <Tooltip title={copiedIndex === i ? 'Copied!' : 'Copy response'} arrow>
+                            <IconButton
+                              size="small"
+                              onClick={() => copyToClipboard(cleanContent, i)}
+                              sx={{
+                                color: copiedIndex === i ? '#34d399' : 'rgba(255,255,255,0.4)',
+                                '&:hover': { color: '#fff', backgroundColor: 'rgba(255,255,255,0.06)' },
+                                padding: '3px',
+                              }}
+                            >
+                              {copiedIndex === i ? (
+                                <CheckIcon sx={{ fontSize: 15 }} />
+                              ) : (
+                                <ContentCopyIcon sx={{ fontSize: 15 }} />
+                              )}
+                            </IconButton>
+                          </Tooltip>
+
+                          <Tooltip title="Read response aloud in Female Voice (Audio)" arrow>
+                            <IconButton
+                              size="small"
+                              onClick={() => speakText(cleanContent)}
+                              sx={{
+                                color: 'rgba(255,255,255,0.4)',
+                                '&:hover': { color: '#60a5fa', backgroundColor: 'rgba(255,255,255,0.06)' },
+                                padding: '3px',
+                              }}
+                            >
+                              <VolumeUpIcon sx={{ fontSize: 16 }} />
+                            </IconButton>
+                          </Tooltip>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
+          <div ref={messagesEndRef} />
+        </Container>
+        </div>
+
+        {/* Ambient Voice Active Banner (shows when voice dictation is on) */}
+        {isListening && (
+          <div className="px-6 py-1.5 bg-blue-950/40 border-t border-blue-500/20 flex items-center justify-between text-xs text-blue-300">
+            <div className="flex items-center gap-2.5">
+              <span className="flex items-center gap-1">
+                <span className="w-1 h-3 bg-blue-400 rounded-full audio-bar-1" />
+                <span className="w-1 h-4 bg-cyan-400 rounded-full audio-bar-2" />
+                <span className="w-1 h-2.5 bg-indigo-400 rounded-full audio-bar-3" />
+              </span>
+              <span className="font-medium">
+                Ambient Voice Dictation Active • Speak and type simultaneously (no need to stop recording)
+              </span>
+            </div>
+            <button
+              onClick={toggleListening}
+              className="px-2 py-0.5 rounded text-[11px] bg-blue-500/20 hover:bg-blue-500/30 text-blue-200 border border-blue-500/30 font-medium"
+            >
+              Mute Mic
+            </button>
+          </div>
+        )}
+
+        {/* Ultra-Premium Glass Floating Command Bar Input Area */}
+        <div className="p-4 sm:p-6 bg-gradient-to-t from-[#06070a] via-[#07090e]/95 to-transparent border-t border-white/[0.04]">
+          <Container maxWidth="md" disableGutters>
+            {/* Attached files preview tray */}
+            {attachedFiles.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2 px-1 animate-fade-in">
+                {attachedFiles.map((f) => (
+                  <div
+                    key={f.id}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-blue-950/50 border border-blue-500/30 text-xs text-blue-200 shadow-sm"
+                  >
+                    <InsertDriveFileOutlinedIcon sx={{ fontSize: 15, color: '#60a5fa' }} />
+                    <span className="font-semibold truncate max-w-[180px]">{f.name}</span>
+                    <span className="text-[10px] text-blue-300/60 font-mono">({formatFileSize(f.size)})</span>
+                    <button
+                      type="button"
+                      onClick={() => removeAttachedFile(f.id)}
+                      className="ml-1 p-0.5 rounded-full hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                    >
+                      <CloseIcon sx={{ fontSize: 13 }} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Hidden File Input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".txt,.csv,.json,.pdf,.log,.py,.mq4,.mq5,.js,.ts,.md,.png,.jpg,.jpeg"
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+
+            <div
+              className={`relative flex items-center bg-[#101010] rounded-xl border transition-all duration-200 px-3 py-1.5 shadow-lg ${
+                isListening
+                  ? 'border-[#71717A] shadow-none'
+                  : 'border-[#262626] focus-within:border-[#444444]'
+              }`}
+            >
+              {/* Attachment Button */}
+              <Tooltip title="Attach data file (CSV, MT5 logs, JSON, code, text, image)" arrow>
+                <IconButton
+                  size="medium"
+                  onClick={() => fileInputRef.current?.click()}
+                  sx={{
+                    color: attachedFiles.length > 0 ? '#FFFFFF' : '#71717A',
+                    backgroundColor: attachedFiles.length > 0 ? '#222222' : 'transparent',
+                    border: attachedFiles.length > 0 ? '1px solid #383838' : '1px solid transparent',
+                    '&:hover': { color: '#FFFFFF', backgroundColor: '#1c1c1c' },
+                  }}
+                >
+                  <AttachFileIcon sx={{ fontSize: 18 }} />
+                </IconButton>
+              </Tooltip>
+
+              {/* Live Web Search Toggle Button */}
+              <Tooltip
+                title={
+                  webSearchEnabled
+                    ? 'Web Search is ON — Sora will fetch live real-time web results before answering'
+                    : 'Web Search is OFF — Click to enable live web search & real-time market data'
+                }
+                arrow
+              >
+                <button
+                  type="button"
+                  onClick={() => setWebSearchEnabled((prev) => !prev)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 select-none ml-1 ${
+                    webSearchEnabled
+                      ? 'bg-[#222222] text-[#FFFFFF] border border-[#444444]'
+                      : 'bg-[#141414] text-[#71717A] hover:text-[#D4D4D8] hover:bg-[#1c1c1c] border border-[#222222]'
+                  }`}
+                >
+                  <TravelExploreIcon
+                    sx={{ fontSize: 16 }}
+                    className={webSearchEnabled ? 'text-[#FFFFFF]' : 'text-[#71717A]'}
+                  />
+                  <span className="text-[11px] font-mono tracking-tight hidden sm:inline">
+                    {webSearchEnabled ? 'Search ON' : 'Web Search'}
+                  </span>
+                  {webSearchEnabled && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#00D99A] live-blink" />
+                  )}
+                </button>
+              </Tooltip>
+
+              {/* Natural Input Field (User can type while speaking) */}
+              <input
+                className="flex-1 bg-transparent border-none outline-none text-white px-3 py-3 text-sm placeholder-slate-400 font-sans"
+                placeholder={
+                  isListening
+                    ? 'Listening... Speak or type your message freely...'
+                    : 'Ask Sora about MT5 data, market analysis, or trading strategies...'
+                }
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
+                disabled={isStreaming}
+              />
+
+              {/* Ambient Hands-Free Audio Input Button */}
+              <Tooltip
+                title={
+                  isListening
+                    ? 'Mic is active (listening continuously). Click to turn off.'
+                    : 'Enable live voice dictation (hands-free, type & speak simultaneously)'
+                }
+                arrow
+              >
+                <IconButton
+                  size="medium"
+                  onClick={toggleListening}
+                  sx={{
+                    color: isListening ? '#38bdf8' : 'rgba(255, 255, 255, 0.45)',
+                    backgroundColor: isListening ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
+                    border: isListening ? '1px solid rgba(56, 189, 248, 0.3)' : '1px solid transparent',
+                    '&:hover': {
+                      color: '#38bdf8',
+                      backgroundColor: 'rgba(56, 189, 248, 0.2)',
+                    },
+                    marginRight: '4px',
+                  }}
+                >
+                  {isListening ? (
+                    <GraphicEqIcon sx={{ fontSize: 19 }} className="animate-pulse" />
+                  ) : (
+                    <MicIcon sx={{ fontSize: 19 }} />
+                  )}
+                </IconButton>
+              </Tooltip>
+
+              {/* Send / Stop Button */}
+              {isStreaming ? (
+                <Tooltip title="Stop generating" arrow>
+                  <IconButton
+                    size="medium"
+                    onClick={handleStop}
+                    sx={{
+                      color: '#f43f5e',
+                      backgroundColor: 'rgba(244, 63, 94, 0.1)',
+                      '&:hover': {
+                        backgroundColor: 'rgba(244, 63, 94, 0.2)',
+                      },
+                    }}
+                  >
+                    <StopIcon sx={{ fontSize: 18 }} />
+                  </IconButton>
+                </Tooltip>
+              ) : (
+                <Tooltip title="Send message (Enter)" arrow>
+                  <span>
+                    <IconButton
+                      size="medium"
+                      onClick={handleSend}
+                      disabled={!input.trim()}
+                      sx={{
+                        color: '#fff',
+                        backgroundColor: input.trim() ? '#2563eb' : 'transparent',
+                        '&:hover': {
+                          backgroundColor: input.trim() ? '#1d4ed8' : 'transparent',
+                        },
+                        '&.Mui-disabled': {
+                          color: 'rgba(255, 255, 255, 0.2)',
+                        },
+                        transition: 'all 0.2s',
+                      }}
+                    >
+                      <SendIcon sx={{ fontSize: 18 }} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              )}
+            </div>
+
+            {/* Quick Helper Subtext */}
+            <div className="flex items-center justify-between px-2 pt-2 text-[11px] text-slate-400">
+              <span className="flex items-center gap-1.5">
+                <AutoAwesomeIcon sx={{ fontSize: 12 }} className="text-blue-400" />
+                <span>Powered by FreeLLMAPI Unified Gateway</span>
+              </span>
+              <span className="font-mono text-[10px]">Press Enter to send • Shift+Enter for newline</span>
+            </div>
+          </Container>
+        </div>
+      </main>
+
+      {/* Detailed Site Reader Modal / Dialog */}
+      <Dialog
+        open={Boolean(previewSite)}
+        onClose={() => setPreviewSite(null)}
+        maxWidth="md"
+        fullWidth
+        slotProps={{
+          paper: {
+            sx: {
+              backgroundColor: '#0a0d18',
+              backgroundImage: 'radial-gradient(circle at top right, rgba(56, 189, 248, 0.08), transparent 70%)',
+              border: '1px solid rgba(56, 189, 248, 0.25)',
+              borderRadius: '16px',
+              color: '#f1f5f9',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7)',
+            },
+          },
+        }}
+      >
+        {previewSite && (
+          <>
+            <div className="flex items-center justify-between p-4 border-b border-white/[0.08] bg-white/[0.02]">
+              <div className="flex items-center gap-2.5 min-w-0 pr-3">
+                <div className="w-8 h-8 rounded-lg bg-cyan-500/20 flex items-center justify-center flex-shrink-0">
+                  <MenuBookIcon sx={{ fontSize: 18, color: '#38bdf8' }} />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-mono text-cyan-400 uppercase tracking-wider">
+                      {previewSite.siteName || 'Website Reader'}
+                    </span>
+                    {previewSite.readSuccess ? (
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10.5px] font-medium border border-emerald-500/30">
+                        ✓ Full Site Content Extracted ({previewSite.wordCount?.toLocaleString()} words)
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 text-[10.5px] font-medium border border-blue-500/30">
+                        Summary Preview
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="text-sm font-semibold text-white truncate max-w-lg mt-0.5">
+                    {previewSite.title}
+                  </h3>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <a
+                  href={previewSite.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-xs text-slate-300 hover:text-white transition-colors"
+                >
+                  <OpenInNewIcon sx={{ fontSize: 13 }} />
+                  <span>Open URL</span>
+                </a>
+                <IconButton
+                  size="small"
+                  onClick={() => setPreviewSite(null)}
+                  sx={{ color: '#94a3b8', '&:hover': { color: '#fff' } }}
+                >
+                  <CloseIcon sx={{ fontSize: 18 }} />
+                </IconButton>
+              </div>
+            </div>
+
+            <div className="p-5 max-h-[65vh] overflow-y-auto space-y-4 text-slate-200">
+              {/* Site URL bar + Quick Action */}
+              <div className="px-3 py-1.5 rounded-lg bg-black/40 border border-white/[0.06] text-xs font-mono text-slate-400 break-all select-all flex items-center justify-between">
+                <span className="truncate pr-2">{previewSite.url}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(previewSite.content || previewSite.preview || previewSite.url);
+                    setSiteCopied(true);
+                    setTimeout(() => setSiteCopied(false), 2000);
+                  }}
+                  className="text-cyan-400 hover:text-cyan-300 text-[11px] font-sans flex-shrink-0 font-medium cursor-pointer"
+                >
+                  {siteCopied ? 'Copied Content!' : 'Copy Text'}
+                </button>
+              </div>
+
+              {/* Extracted Content Body with Markdown Rendering */}
+              <div className="max-w-none text-sm leading-relaxed">
+                {previewSite.content ? (
+                  <MarkdownContent content={previewSite.content} />
+                ) : (
+                  <p className="text-slate-300 whitespace-pre-wrap leading-relaxed text-[15px]">
+                    {previewSite.preview || previewSite.snippet || 'No extracted body text available.'}
+                  </p>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </Dialog>
+
+      {/* ─── Memory Bank Modal Panel ─────────────────────────────────── */}
+      <Dialog
+        open={memoryPanelOpen}
+        onClose={() => setMemoryPanelOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        slotProps={{
+          paper: {
+            sx: {
+              background: '#0c0f1a',
+              border: '1px solid rgba(99, 102, 241, 0.25)',
+              borderRadius: '16px',
+              color: '#e2e8f0',
+              boxShadow: '0 25px 80px rgba(0,0,0,0.7)',
+              overflow: 'hidden',
+            },
+          },
+        }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07] bg-indigo-950/30">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-indigo-600/30 flex items-center justify-center">
+              <PsychologyAltIcon sx={{ fontSize: 18, color: '#818cf8' }} />
+            </div>
+            <div>
+              <span className="text-sm font-bold text-white">Memory Bank</span>
+              <p className="text-[10px] text-indigo-300 mt-0">Sora remembers across all chats</p>
+            </div>
+          </div>
+          <IconButton size="small" onClick={() => setMemoryPanelOpen(false)} sx={{ color: '#94a3b8', '&:hover': { color: '#fff' } }}>
+            <CloseIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </div>
+
+        <div className="p-5 space-y-5 max-h-[70vh] overflow-y-auto custom-scrollbar">
+
+          {/* Quick-add a new memory */}
+          <div className="space-y-2.5">
+            <p className="text-xs font-semibold text-indigo-300 uppercase tracking-widest">Add New Memory</p>
+
+            {/* Type selector */}
+            <div className="flex gap-1.5 flex-wrap">
+              {(['instruction', 'code', 'fact', 'message'] as MemoryItem['type'][]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setMemorySaveType(t)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold capitalize transition-all border ${
+                    memorySaveType === t
+                      ? 'bg-indigo-600/50 border-indigo-400/60 text-indigo-100'
+                      : 'bg-white/[0.04] border-white/[0.07] text-slate-400 hover:text-white hover:border-white/20'
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+
+            <textarea
+              value={memoryInput}
+              onChange={(e) => setMemoryInput(e.target.value)}
+              placeholder={
+                memorySaveType === 'instruction'
+                  ? 'e.g. Always explain code with comments. Never use inline styles.'
+                  : memorySaveType === 'code'
+                  ? 'e.g. ```python\ndef calculate_pnl(entry, exit): return exit - entry\n```'
+                  : memorySaveType === 'fact'
+                  ? 'e.g. My trading account uses MetaTrader 5 with USD base currency.'
+                  : 'Enter a note or saved message for Sora to remember...'
+              }
+              rows={3}
+              className="w-full bg-[#0a0d1a] border border-white/[0.08] focus:border-indigo-500/50 rounded-xl px-3 py-2.5 text-sm text-slate-200 placeholder-slate-600 outline-none resize-none transition-colors font-mono"
+            />
+
+            <button
+              disabled={!memoryInput.trim()}
+              onClick={async () => {
+                if (!memoryInput.trim()) return;
+                await saveMemory({
+                  type: memorySaveType,
+                  title: memoryInput.trim().slice(0, 55).replace(/\n/g, ' '),
+                  content: memoryInput.trim(),
+                  tags: [memorySaveType],
+                  source: 'manual',
+                  pinned: false,
+                });
+                setMemoryInput('');
+                loadMemories();
+              }}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600/80 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold transition-all shadow-md shadow-indigo-900/40"
+            >
+              <BookmarkAddIcon sx={{ fontSize: 16 }} />
+              Save to Memory
+            </button>
+          </div>
+
+          {/* Memory list */}
+          {memories.length === 0 ? (
+            <div className="text-center py-8">
+              <PsychologyAltIcon sx={{ fontSize: 32 }} className="text-slate-700 mb-2" />
+              <p className="text-sm text-slate-500">No memories saved yet.</p>
+              <p className="text-xs text-slate-600 mt-1">Sora will auto-learn from your instructions, or you can add them manually above.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-widest">Saved Memories ({memories.length})</p>
+              {memories.map((mem) => {
+                const typeColors: Record<string, string> = {
+                  instruction: 'bg-blue-500/15 text-blue-300 border-blue-500/25',
+                  code: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/25',
+                  fact: 'bg-amber-500/15 text-amber-300 border-amber-500/25',
+                  message: 'bg-purple-500/15 text-purple-300 border-purple-500/25',
+                };
+                return (
+                  <div
+                    key={mem.id}
+                    className={`p-3 rounded-xl border bg-white/[0.02] border-white/[0.06] hover:border-indigo-500/25 transition-all group ${mem.pinned ? 'border-indigo-500/30 bg-indigo-900/10' : ''}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border capitalize ${typeColors[mem.type] || typeColors.instruction}`}>
+                            {mem.type}
+                          </span>
+                          {mem.pinned && (
+                            <span className="text-[10px] text-indigo-400 font-semibold">📌 Pinned</span>
+                          )}
+                        </div>
+                        <p className="text-xs font-medium text-slate-200 line-clamp-1">{mem.title}</p>
+                        <p className="text-[11px] text-slate-400 line-clamp-2 mt-0.5 font-mono leading-relaxed">
+                          {mem.content.replace(/```[a-z]*/g, '').trim()}
+                        </p>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          await deleteMemory(mem.id);
+                          loadMemories();
+                        }}
+                        className="opacity-0 group-hover:opacity-100 p-1 rounded-lg hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 transition-all flex-shrink-0"
+                      >
+                        <BookmarkRemoveIcon sx={{ fontSize: 14 }} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Cross-chat recall info box */}
+          {lastRecalled && (lastRecalled.memories?.length > 0 || lastRecalled.excerpts?.length > 0) && (
+            <div className="p-3.5 rounded-xl bg-indigo-950/50 border border-indigo-500/25 space-y-2">
+              <p className="text-xs font-semibold text-indigo-300">💡 Last Recall (used in recent response)</p>
+              {lastRecalled.memories && lastRecalled.memories.length > 0 && (
+                <p className="text-[11px] text-slate-400">
+                  Injected <strong className="text-indigo-300">{lastRecalled.memories.length}</strong> memorized rule(s)
+                </p>
+              )}
+              {lastRecalled.excerpts && lastRecalled.excerpts.length > 0 && (
+                <p className="text-[11px] text-slate-400">
+                  Recalled <strong className="text-cyan-300">{lastRecalled.excerpts.length}</strong> previous conversation(s):&nbsp;
+                  {lastRecalled.excerpts.map((e) => `"${e.chatTitle}"`).join(', ')}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </Dialog>
+    </div>
+  );
+};
+
+export default SoraChat;
