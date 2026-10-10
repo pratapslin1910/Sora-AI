@@ -508,8 +508,10 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
   }, []);
 
   useEffect(() => {
-    loadSettingsData();
-  }, [loadSettingsData]);
+    if (settingsOpen) {
+      void loadSettingsData();
+    }
+  }, [settingsOpen, loadSettingsData]);
 
   const handleSaveSettings = async () => {
     setSettingsSaving(true);
@@ -1310,10 +1312,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
         <div className="p-2.5 border-t border-[#222222] bg-[#0c0c0c] shrink-0 space-y-2">
           <div>
             <button
-              onClick={() => {
-                loadSettingsData();
-                onSettingsOpenChange(true);
-              }}
+              onClick={() => onSettingsOpenChange(true)}
               className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#141414] hover:bg-[#1a1a1a] border border-[#27272a] hover:border-[#383838] transition-all group"
             >
               <SettingsIcon sx={{ fontSize: 15 }} className="text-[#A1A1AA] group-hover:text-white flex-shrink-0" />
@@ -2147,13 +2146,13 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
               )}
               <button
                 type="button"
-                disabled={historyDeleting}
+                disabled={historyDeleting || isStreaming}
                 onClick={async () => {
+                  if (isStreaming) return;
                   if (!window.confirm('Delete all saved chat history? This cannot be undone. Long-term memories and workspace files will remain.')) return;
                   setHistoryDeleting(true);
                   setHistoryActionMsg(null);
                   try {
-                    if (isStreaming) handleStop();
                     const result = await deleteAllChatHistory();
                     if (!result.ok) throw new Error(result.error || 'Could not delete chat history.');
                     activeChatIdRef.current = null;
@@ -2173,7 +2172,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                 }}
                 className="px-3 py-2 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/15 text-rose-300 disabled:opacity-50 text-xs font-semibold transition-colors"
               >
-                {historyDeleting ? 'Deleting history…' : 'Delete all chat history'}
+                {historyDeleting ? 'Deleting history…' : isStreaming ? 'Stop generation to delete history' : 'Delete all chat history'}
               </button>
             </div>
 
