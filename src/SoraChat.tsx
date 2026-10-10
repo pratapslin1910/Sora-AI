@@ -723,7 +723,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
     let promptContent = trimmedInput;
     if (attachedFiles.length > 0) {
       const attachmentsBlock = attachedFiles
-        .map((f) => `[ATTACHED FILE: ${f.name}]\n```\n${f.content}\n````)
+        .map((f) => `[ATTACHED FILE: ${f.name}]\n\`\`\`\n${f.content}\n\`\`\``)
         .join('\n\n');
       promptContent = trimmedInput
         ? `${trimmedInput}\n\n${attachmentsBlock}`
