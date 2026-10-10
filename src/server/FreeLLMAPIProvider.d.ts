@@ -36,7 +36,7 @@ export declare class FreeLLMAPIProvider {
     model?: string;
     temperature?: number;
     signal?: AbortSignal;
-  }): Promise<{ role: string; content: string; model: string; usage?: unknown }>;
+  }): Promise<{ role: string; content: string; reasoning?: string | null; model: string; usage?: unknown }>;
 
   streamChat(options: {
     messages: Array<{ role: string; content: string }>;
@@ -44,6 +44,7 @@ export declare class FreeLLMAPIProvider {
     temperature?: number;
     signal?: AbortSignal;
     onToken?: (token: string) => void;
+    onReasoning?: (reasoning: string) => void;
     onDone?: () => void;
     onError?: (err: Error) => void;
   }): Promise<string>;

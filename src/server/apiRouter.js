@@ -27,10 +27,14 @@ import {
   detectAndExtractMemories,
   recallContextForQuery,
 } from './memoryStore.js';
+import { buildSystemPrompt, SORA_PROMPT_VERSION } from './systemPrompt.js';
+import { parseReasoningAndAnswer } from './responseParser.js';
 
 import { fileURLToPath } from 'node:url';
+import { getExtensionManager } from '../extensions/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 /** Path to user-saved gateway settings */
 const SETTINGS_FILE = path.resolve(__dirname, '../../data/sora_settings.json');
 const DEFAULT_BASE_URL = 'http://127.0.0.1:31415/v1';
@@ -39,6 +43,32 @@ const DEFAULT_CHAT_RETENTION_DAYS = 0;
 
 let defaultProviderInstance = null;
 let activeWorkspaceRoot = process.cwd();
+
+export const extensionManager = getExtensionManager({
+  extensionsDir: path.resolve(__dirname, '../../extensions'),
+  configFile: path.resolve(__dirname, '../../data/extensions_config.json'),
+});
+let extensionManagerInitialized = false;
+
+export async function ensureExtensionManager() {
+  if (!extensionManagerInitialized) {
+    try {
+      await extensionManager.initialize();
+      const settings = loadSettings();
+      if (settings.permissionAllowance) {
+        extensionManager.permissionManager.setAllowanceMode(settings.permissionAllowance);
+      }
+      extensionManagerInitialized = true;
+    } catch (err) {
+      console.warn('[API Router] ExtensionManager init error:', err.message);
+    }
+  }
+  return extensionManager;
+}
+
+if (process.env.NODE_ENV !== 'test') {
+  ensureExtensionManager();
+}
 
 /** Load persisted user gateway settings (baseUrl, apiKey, model) */
 function loadSettings() {
@@ -197,6 +227,142 @@ export async function handleApiRequest(req, res, customProvider) {
     return true;
   }
 
+  // ── Modular Extension System Endpoints ─────────────────────────────────
+  // GET /api/extensions — List installed extensions, status, permissions, configs
+  if (req.method === 'GET' && pathname === '/api/extensions') {
+    await ensureExtensionManager();
+    const extensions = extensionManager.listExtensions();
+    jsonResponse(res, 200, { ok: true, extensions });
+    return true;
+  }
+
+  // POST /api/extensions/import — Import extension from local directory
+  if (req.method === 'POST' && pathname === '/api/extensions/import') {
+    await ensureExtensionManager();
+    let body;
+    try { body = await parseJsonBody(req); } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+      return true;
+    }
+    const folderPath = body?.path;
+    if (!folderPath) {
+      jsonResponse(res, 400, { ok: false, error: 'Path parameter is required.' });
+      return true;
+    }
+    try {
+      const result = await extensionManager.importExtension(folderPath);
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  // POST /api/extensions/:id/toggle — Enable or disable extension
+  const toggleMatch = pathname.match(/^\/api\/extensions\/([^/]+)\/toggle$/);
+  if (req.method === 'POST' && toggleMatch) {
+    await ensureExtensionManager();
+    const extId = decodeURIComponent(toggleMatch[1]);
+    let body = {};
+    try { body = await parseJsonBody(req); } catch {}
+    try {
+      if (body.enabled === false) {
+        const result = extensionManager.disableExtension(extId);
+        jsonResponse(res, 200, result);
+      } else {
+        const result = await extensionManager.enableExtension(extId);
+        jsonResponse(res, 200, result);
+      }
+    } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  // POST /api/extensions/:id/config — Update configuration and permissions
+  const configMatch = pathname.match(/^\/api\/extensions\/([^/]+)\/config$/);
+  if (req.method === 'POST' && configMatch) {
+    await ensureExtensionManager();
+    const extId = decodeURIComponent(configMatch[1]);
+    let body;
+    try { body = await parseJsonBody(req); } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+      return true;
+    }
+    try {
+      const result = extensionManager.updateExtensionConfig(extId, {
+        config: body.config,
+        permissions: body.permissions,
+      });
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  // POST /api/extensions/:id/reload — Reload extension from disk
+  const reloadMatch = pathname.match(/^\/api\/extensions\/([^/]+)\/reload$/);
+  if (req.method === 'POST' && reloadMatch) {
+    await ensureExtensionManager();
+    const extId = decodeURIComponent(reloadMatch[1]);
+    try {
+      const result = await extensionManager.reloadExtension(extId);
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  // DELETE /api/extensions/:id — Remove extension
+  const deleteExtMatch = pathname.match(/^\/api\/extensions\/([^/]+)$/);
+  if (req.method === 'DELETE' && deleteExtMatch) {
+    await ensureExtensionManager();
+    const extId = decodeURIComponent(deleteExtMatch[1]);
+    try {
+      const result = extensionManager.removeExtension(extId);
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
+  // GET /api/extensions/tools — List all active tools, schemas, and prompt formats
+  if (req.method === 'GET' && pathname === '/api/extensions/tools') {
+    await ensureExtensionManager();
+    const tools = extensionManager.toolRegistry.listTools();
+    const promptFormat = extensionManager.toolRegistry.formatToolsForPrompt();
+    const openAiSchema = extensionManager.toolRegistry.getToolsOpenAISchema();
+    jsonResponse(res, 200, { ok: true, tools, promptFormat, openAiSchema });
+    return true;
+  }
+
+  // POST /api/extensions/execute — Execute an extension tool
+  if (req.method === 'POST' && pathname === '/api/extensions/execute') {
+    await ensureExtensionManager();
+    let body;
+    try { body = await parseJsonBody(req); } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+      return true;
+    }
+    const { tool, args = {} } = body || {};
+    if (!tool) {
+      jsonResponse(res, 400, { ok: false, error: '"tool" name is required.' });
+      return true;
+    }
+    try {
+      const result = await extensionManager.bridge.executeTool(tool, args, {
+        workspaceRoot: activeWorkspaceRoot,
+      });
+      jsonResponse(res, result.ok ? 200 : 400, result);
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return true;
+  }
+
   // ── GET /api/health ─────────────────────────────────────────────────────
   if (req.method === 'GET' && pathname === '/api/health') {
     try {
@@ -236,6 +402,9 @@ export async function handleApiRequest(req, res, customProvider) {
       chatRetentionDays: Number.isFinite(Number(saved.chatRetentionDays))
         ? Math.max(0, Math.min(3650, Number(saved.chatRetentionDays)))
         : DEFAULT_CHAT_RETENTION_DAYS,
+      permissionAllowance: saved.permissionAllowance || 'full_access',
+      systemPromptVersion: SORA_PROMPT_VERSION,
+      defaultIdentity: 'Sora',
     });
     return true;
   }
@@ -263,8 +432,14 @@ export async function handleApiRequest(req, res, customProvider) {
         : (Number.isFinite(Number(current.chatRetentionDays))
           ? Math.max(0, Math.min(3650, Math.floor(Number(current.chatRetentionDays))))
           : DEFAULT_CHAT_RETENTION_DAYS),
+      permissionAllowance: ['full_access', 'sandbox', 'strict'].includes(body.permissionAllowance)
+        ? body.permissionAllowance
+        : (current.permissionAllowance || 'full_access'),
     };
     saveSettings(updated);
+    if (extensionManagerInitialized) {
+      extensionManager.permissionManager.setAllowanceMode(updated.permissionAllowance);
+    }
     jsonResponse(res, 200, { ok: true, message: 'Settings saved. Gateway reconfigured.' });
     return true;
   }
@@ -286,13 +461,26 @@ export async function handleApiRequest(req, res, customProvider) {
       return true;
     }
 
+    // Extract any existing client-provided system message
+    let clientSystemPrompt = '';
+    const nonSystemMessages = [];
+    for (const m of messages) {
+      if (m.role === 'system') {
+        const text = extractTextFromContent(m.content);
+        if (text) {
+          clientSystemPrompt = clientSystemPrompt ? `${clientSystemPrompt}\n\n${text}` : text;
+        }
+      } else {
+        nonSystemMessages.push({ role: m.role, content: m.content });
+      }
+    }
+
     // Process Memory & Cross-Chat Context Recall
-    let messagesForModel = messages.map((m) => ({ role: m.role, content: m.content }));
     let recalledData = null;
     let autoSavedMemories = [];
 
     if (recallMemory !== false) {
-      const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+      const lastUserMsg = [...nonSystemMessages].reverse().find((m) => m.role === 'user');
       const queryText = lastUserMsg ? extractTextFromContent(lastUserMsg.content) : '';
       if (queryText) {
         try {
@@ -301,21 +489,6 @@ export async function handleApiRequest(req, res, customProvider) {
             { currentChatId: currentChatId || null, maxMemories: 5, maxChatTurns: 3 },
             { baseUrl: provider.baseUrl, apiKey: provider.apiKey }
           );
-
-          if (recalledData && recalledData.formattedContext) {
-            const systemIdx = messagesForModel.findIndex((m) => m.role === 'system');
-            if (systemIdx >= 0) {
-              messagesForModel[systemIdx] = {
-                role: 'system',
-                content: `${recalledData.formattedContext}\n\n${messagesForModel[systemIdx].content}`,
-              };
-            } else {
-              messagesForModel.unshift({
-                role: 'system',
-                content: recalledData.formattedContext,
-              });
-            }
-          }
 
           // Automatic memory extraction
           const detected = detectAndExtractMemories(queryText);
@@ -330,6 +503,79 @@ export async function handleApiRequest(req, res, customProvider) {
           console.warn('[API Router] Memory recall failed:', recallErr.message);
         }
       }
+    }
+
+    // Build centralized, versioned system prompt adhering to strict 4-tier hierarchy
+    await ensureExtensionManager();
+    const settings = loadSettings();
+    const permissionAllowance = settings.permissionAllowance || 'full_access';
+    extensionManager.permissionManager.setAllowanceMode(permissionAllowance);
+
+    // If clientSystemPrompt didn't already supply tools prompt, inject all active extension tools
+    const toolsPrompt = clientSystemPrompt.includes('AVAILABLE TOOLS:')
+      ? ''
+      : extensionManager.toolRegistry.formatToolsForPrompt();
+
+    const centralizedSystemPrompt = buildSystemPrompt({
+      clientSystemPrompt,
+      recalledContext: recalledData?.formattedContext || '',
+      currentModel: model || provider.defaultModel || 'auto',
+      toolsPrompt,
+      permissionAllowance,
+    });
+
+    // Sanitize messages before sending to the LLM:
+    // 1. Drop any non-system message whose text content is empty/whitespace.
+    // 2. Collapse consecutive same-role messages (some LLMs reject them) by
+    //    joining their content with a separator.
+    const sanitizeContent = (content) => {
+      let str = '';
+      if (typeof content === 'string') str = content.trim();
+      else if (Array.isArray(content)) {
+        str = content
+          .map((p) => (p?.type === 'text' ? (p.text || '').trim() : '[image]'))
+          .filter(Boolean)
+          .join(' ');
+      }
+      if (!str) return '';
+      // Strip [Called tool: ...] and [Calling tool: ...] markers so they never leak into model history
+      str = str
+        .replace(/\[Called tool:[^\]]*\]/gi, '')
+        .replace(/\[Calling tool:[^\]]*\]/gi, '')
+        .trim();
+      return str;
+    };
+
+    const rawMessages = [
+      { role: 'system', content: centralizedSystemPrompt },
+      ...nonSystemMessages,
+    ];
+
+    // Remove messages where content is empty (would cause upstream API errors)
+    const filteredMessages = rawMessages.filter((m) => {
+      const text = sanitizeContent(m.content);
+      return text.length > 0;
+    });
+
+    // Collapse consecutive same-role turns (join with newline separator)
+    const messagesForModel = [];
+    for (const msg of filteredMessages) {
+      const last = messagesForModel[messagesForModel.length - 1];
+      const isVision = Array.isArray(msg.content);
+      const cleaned = msg.role === 'system' || isVision ? msg.content : sanitizeContent(msg.content);
+      if (last && last.role === msg.role && msg.role !== 'system') {
+        // Merge: combine text content
+        const prevText = typeof last.content === 'string' ? last.content : sanitizeContent(last.content);
+        last.content = prevText + '\n\n' + cleaned;
+      } else {
+        messagesForModel.push({ role: msg.role, content: cleaned });
+      }
+    }
+
+    // Guard: ensure the last message before the API call is from 'user'
+    // (some LLMs reject conversations that end with 'assistant')
+    if (messagesForModel.length > 0 && messagesForModel[messagesForModel.length - 1].role === 'assistant') {
+      messagesForModel.push({ role: 'user', content: '(Please continue.)' });
     }
 
     const abortController = new AbortController();
@@ -365,6 +611,11 @@ export async function handleApiRequest(req, res, customProvider) {
           model,
           temperature,
           signal: abortController.signal,
+          onReasoning: (reasoning) => {
+            if (!res.writableEnded) {
+              res.write(`data: ${JSON.stringify({ reasoning })}\n\n`);
+            }
+          },
           onToken: (token) => {
             if (!res.writableEnded) {
               res.write(`data: ${JSON.stringify({ token })}\n\n`);
@@ -397,9 +648,15 @@ export async function handleApiRequest(req, res, customProvider) {
           temperature,
           signal: abortController.signal,
         });
+        const parsed = parseReasoningAndAnswer(result.content);
+        const cleanMessage = {
+          ...result,
+          content: parsed.answer,
+          reasoning: result.reasoning || parsed.thought,
+        };
         jsonResponse(res, 200, {
           ok: true,
-          message: result,
+          message: cleanMessage,
           recalled: recalledData,
           memorySaved: autoSavedMemories,
         });

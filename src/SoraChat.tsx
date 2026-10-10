@@ -30,6 +30,7 @@ import PsychologyAltIcon from '@mui/icons-material/PsychologyAlt';
 import BookmarkAddIcon from '@mui/icons-material/BookmarkAdd';
 import BookmarkRemoveIcon from '@mui/icons-material/BookmarkRemove';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
+import VolumeOffIcon from '@mui/icons-material/VolumeOff';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CheckIcon from '@mui/icons-material/Check';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -41,6 +42,10 @@ import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutl
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import SettingsIcon from '@mui/icons-material/Settings';
+import ExtensionIcon from '@mui/icons-material/Extension';
+import { ExtensionsManagerView } from './components/settings/ExtensionsManagerView';
+import { executeExtensionTool } from './services/extensionService';
+import { parseToolCallFromText, stripToolCallsFromText, sanitizeContentForModel } from './utils/toolParser';
 import {
   GatewayHealth,
   ChatSession,
@@ -61,6 +66,8 @@ import {
   deleteMemory,
   getSettings,
   saveSettings,
+  parseReasoningAndAnswer,
+  prepareSpeechText,
 } from './services/chatService';
 
 export interface AttachedFileInfo {
@@ -380,6 +387,10 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
   const speechRecognitionRef = useRef<any>(null);
   const isListeningRef = useRef(false);
 
+  // Web Speech API TTS State
+    const [speakingMessageIndex, setSpeakingMessageIndex] = useState<number | null>(null);
+
+
   // Live reasoning state — populated by actual actions, never fabricated
   const [thinkingTimer, setThinkingTimer] = useState(0);
   const thinkingIntervalRef = useRef<any>(null);
@@ -488,10 +499,12 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
   const [settingsApiKeySet, setSettingsApiKeySet] = useState(false);
   const [autoDeleteChats, setAutoDeleteChats] = useState(false);
   const [chatRetentionDays, setChatRetentionDays] = useState(30);
+  const [permissionAllowance, setPermissionAllowance] = useState<'full_access' | 'sandbox' | 'strict'>('full_access');
   const [historyDeleting, setHistoryDeleting] = useState(false);
   const [historyActionMsg, setHistoryActionMsg] = useState<{ text: string; error?: boolean } | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaveMsg, setSettingsSaveMsg] = useState<{ text: string; error?: boolean } | null>(null);
+  const [settingsTab, setSettingsTab] = useState<'general' | 'extensions'>('general');
 
   const loadSettingsData = useCallback(async () => {
     try {
@@ -502,6 +515,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
       setSettingsModel(s.model || '');
       setAutoDeleteChats(Boolean(s.autoDeleteChats));
       setChatRetentionDays(Math.max(1, Number(s.chatRetentionDays) || 30));
+      setPermissionAllowance(s.permissionAllowance || 'full_access');
     } catch {
       // ignore
     }
@@ -523,6 +537,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
         model: settingsModel.trim(),
         autoDeleteChats,
         chatRetentionDays,
+        permissionAllowance,
       });
       if (ok) {
         setSettingsSaveMsg({ text: 'Settings saved successfully.' });
@@ -629,7 +644,8 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
       const recognition = new SpeechRecognitionAPI();
       recognition.continuous = true;
       recognition.interimResults = true;
-      recognition.lang = 'en-US';
+      // Dynamic language matching: en-IN natively supports English & Roman Hinglish
+      recognition.lang = 'en-IN';
 
       recognition.onresult = (event: any) => {
         let finalTranscript = '';
@@ -695,6 +711,13 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
         speechRecognitionRef.current.stop();
       } catch {}
     } else {
+      // User is starting to speak: interrupt any active TTS playback immediately
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+      setSpeakingMessageIndex(null);
+      
+
       isListeningRef.current = true;
       setIsListening(true);
       try {
@@ -707,6 +730,12 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
   };
 
   const handleStop = () => {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    setSpeakingMessageIndex(null);
+    
+
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
@@ -720,6 +749,12 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
   const handleSend = async () => {
     const trimmedInput = input.trim();
     if ((!trimmedInput && attachedFiles.length === 0) || isStreaming) return;
+
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    setSpeakingMessageIndex(null);
+    
 
     // Build the user message prompt content and metadata
     let promptContent = trimmedInput;
@@ -917,6 +952,52 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
+    const finishChatTurn = (finalDuration: number) => {
+      if (thinkingIntervalRef.current) {
+        clearInterval(thinkingIntervalRef.current);
+      }
+      setMessages((prev) => {
+        const updated = [...prev];
+        const lastIdx = updated.length - 1;
+        if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+          updated[lastIdx] = { ...updated[lastIdx], thoughtDuration: finalDuration };
+        }
+        // Auto-save the completed conversation to vector DB
+        const cleanMessages = updated.map((m) => {
+          let content = typeof m.content === 'string' ? m.content : (m.content ?? '');
+          if (typeof content === 'string') {
+            // Strip raw tool call syntax and [Called tool: ...] markers from saved history
+            content = content.replace(/\[Called tool:[^\]]*\]/g, '').trim();
+            content = stripToolCallsFromText(content);
+          }
+          return { role: m.role, content };
+        });
+        const currentId = activeChatIdRef.current;
+        if (!isSavingRef.current) {
+          isSavingRef.current = true;
+          saveChatSession({ id: currentId ?? undefined, messages: cleanMessages })
+            .then((saved) => {
+              if (saved) {
+                activeChatIdRef.current = saved.id;
+                setActiveChatId(saved.id);
+              }
+              loadHistory();
+            })
+            .catch(() => {})
+            .finally(() => {
+              setTimeout(() => {
+                isSavingRef.current = false;
+              }, 600);
+            });
+        }
+        return updated;
+      });
+      setIsStreaming(false);
+      abortControllerRef.current = null;
+    };
+
+    let accumulatedContent = '';
+
     // Send history to backend
     await streamChatMessage(
       messagesToSend,
@@ -956,55 +1037,185 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
           // Silently refresh memory list when new memories are auto-saved
           loadMemories();
         },
-        onToken: (token) => {
+        onReasoning: (reasoningChunk) => {
           setMessages((prev) => {
             const updated = [...prev];
             const lastIdx = updated.length - 1;
             if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
-              const prevContent = updated[lastIdx].content;
+              const logs = [...(updated[lastIdx].thinkingLog || [])];
+              const lastLog = logs[logs.length - 1];
+              if (lastLog && !lastLog.startsWith('✓') && !lastLog.startsWith('I remember') && !lastLog.startsWith('I found') && !lastLog.startsWith('The user')) {
+                logs[logs.length - 1] = lastLog + reasoningChunk;
+              } else {
+                logs.push(reasoningChunk);
+              }
               updated[lastIdx] = {
                 ...updated[lastIdx],
-                content: prevContent + token,
+                thinkingLog: logs,
               };
             }
             return updated;
           });
         },
-        onDone: () => {
-          const finalDuration = Math.round((Date.now() - startTime) / 100) / 10;
-          if (thinkingIntervalRef.current) {
-            clearInterval(thinkingIntervalRef.current);
-          }
+        onToken: (token) => {
+          accumulatedContent += token;
           setMessages((prev) => {
             const updated = [...prev];
             const lastIdx = updated.length - 1;
             if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
-              updated[lastIdx] = { ...updated[lastIdx], thoughtDuration: finalDuration };
-            }
-            // Auto-save the completed conversation to vector DB
-            const cleanMessages = updated.map((m) => ({ role: m.role, content: m.content }));
-            const currentId = activeChatIdRef.current;
-            if (!isSavingRef.current) {
-              isSavingRef.current = true;
-              saveChatSession({ id: currentId ?? undefined, messages: cleanMessages })
-                .then((saved) => {
-                  if (saved) {
-                    activeChatIdRef.current = saved.id;
-                    setActiveChatId(saved.id);
-                  }
-                  loadHistory();
-                })
-                .catch(() => {})
-                .finally(() => {
-                  setTimeout(() => {
-                    isSavingRef.current = false;
-                  }, 600);
-                });
+              const prevContent = updated[lastIdx].content;
+              const nextContent = (typeof prevContent === 'string' ? prevContent : '') + token;
+              // Strip ALL raw tool_call syntax (closed/unclosed tags, code blocks, bare JSON)
+              const cleanedContent = stripToolCallsFromText(nextContent);
+              updated[lastIdx] = {
+                ...updated[lastIdx],
+                content: cleanedContent !== '' ? cleanedContent : nextContent,
+              };
             }
             return updated;
           });
-          setIsStreaming(false);
-          abortControllerRef.current = null;
+        },
+        onDone: async () => {
+          const finalDuration = Math.round((Date.now() - startTime) / 100) / 10;
+
+          // Strip any raw tool call text from the displayed bubble immediately
+          const strippedDisplay = stripToolCallsFromText(accumulatedContent);
+          setMessages((prev) => {
+            const updated = [...prev];
+            const lastIdx = updated.length - 1;
+            if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+              const cur = typeof updated[lastIdx].content === 'string' ? updated[lastIdx].content : '';
+              const stripped = stripToolCallsFromText(cur);
+              if (stripped !== cur) {
+                updated[lastIdx] = { ...updated[lastIdx], content: stripped };
+              }
+            }
+            return updated;
+          });
+
+          // Check for autonomous tool execution
+          const toolCall = parseToolCallFromText(accumulatedContent);
+          if (toolCall) {
+            // Update thinking log with requested action
+            setMessages((prev) => {
+              const updated = [...prev];
+              const lastIdx = updated.length - 1;
+              if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+                const logs = [...(updated[lastIdx].thinkingLog || [])];
+                logs.push(`Invoking tool: ${toolCall.tool}...`);
+                updated[lastIdx] = {
+                  ...updated[lastIdx],
+                  content: '*Executing ' + toolCall.tool + '...*',
+                  thinkingLog: logs,
+                };
+              }
+              return updated;
+            });
+
+            // Execute the tool through extension service
+            let toolRes: any;
+            try {
+              toolRes = await executeExtensionTool(toolCall.tool, toolCall.args);
+            } catch (err: any) {
+              toolRes = { ok: false, error: err?.message || 'Tool execution failed' };
+            }
+
+            // Update thinking log with tool result
+            setMessages((prev) => {
+              const updated = [...prev];
+              const lastIdx = updated.length - 1;
+              if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+                const logs = [...(updated[lastIdx].thinkingLog || [])];
+                if (toolRes?.ok) {
+                  logs.push(`✓ Executed ${toolCall.tool} successfully`);
+                } else {
+                  logs.push(`⚠️ ${toolCall.tool}: ${toolRes?.error || 'Failed'}`);
+                }
+                updated[lastIdx] = {
+                  ...updated[lastIdx],
+                  content: '', // Clear so Sora's conversational confirmation streams in cleanly
+                  thinkingLog: logs,
+                };
+              }
+              return updated;
+            });
+
+            // Follow-up stream turn for Sora's conversational confirmation.
+            // Sanitize ALL messages in the history so the model never sees raw tool call
+            // text (including [Called tool: ...] markers from earlier turns) and is not
+            // tempted to echo them back in its response.
+            const sanitizedPriorMessages = messagesToSend.map((m) => {
+              if (m.role === 'assistant') {
+                const raw = typeof m.content === 'string' ? m.content : '';
+                const cleaned = sanitizeContentForModel(raw);
+                return { ...m, content: cleaned || '(Thinking…)' };
+              }
+              return m;
+            });
+
+            const followUpMessages = [
+              ...sanitizedPriorMessages,
+              {
+                role: 'assistant',
+                content: `I used the ${toolCall.tool} tool to carry out the action.`,
+              },
+              {
+                role: 'user',
+                content: `<tool_result>\n${JSON.stringify(
+                  toolRes?.ok ? toolRes.data : { error: toolRes?.error },
+                  null,
+                  2
+                )}\n</tool_result>\n\nIn one or two warm, natural sentences, tell the user what you just did in your Sora persona. Output only conversational text — no <tool_call> blocks, no [Called tool:] markers, no JSON, no markdown code fences.`,
+              },
+            ];
+
+            // Accumulate follow-up stream separately so we can strip before display
+            let followUpAccumulated = '';
+
+            await streamChatMessage(
+              followUpMessages as any,
+              {
+                signal: abortController.signal,
+                recallMemory: false,
+                currentChatId: activeChatIdRef.current,
+                onToken: (tok) => {
+                  followUpAccumulated += tok;
+                  // Defer display update via a separate setMessages call
+                  const displayText = sanitizeContentForModel(followUpAccumulated);
+                  setMessages((prev) => {
+                    const updated = [...prev];
+                    const lastIdx = updated.length - 1;
+                    if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+                      updated[lastIdx] = {
+                        ...updated[lastIdx],
+                        // Show displayText if stripping produced something; otherwise
+                        // show nothing (prevents partial [Called tool: text flickering)
+                        content: displayText,
+                      };
+                    }
+                    return updated;
+                  });
+                },
+                onDone: () => {
+                  // Final clean pass on the complete follow-up response
+                  const finalClean = sanitizeContentForModel(followUpAccumulated);
+                  setMessages((prev) => {
+                    const updated = [...prev];
+                    const lastIdx = updated.length - 1;
+                    if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+                      updated[lastIdx] = { ...updated[lastIdx], content: finalClean };
+                    }
+                    return updated;
+                  });
+                  finishChatTurn(finalDuration);
+                },
+                onError: () => finishChatTurn(finalDuration),
+              }
+            );
+            return;
+          }
+
+          finishChatTurn(finalDuration);
         },
         onError: (errMsg) => {
           if (thinkingIntervalRef.current) {
@@ -1069,65 +1280,88 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
     setTimeout(() => setCopiedIndex(null), 2000);
   };
 
-  // Preload and select natural female speech synthesis voice
-  useEffect(() => {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.getVoices();
-      window.speechSynthesis.onvoiceschanged = () => {
-        window.speechSynthesis.getVoices();
-      };
+  // ── Web Speech API TTS — Permanent Feminine Voice ────────────────────────
+  /** Select the best available warm feminine Indian-English or Hindi voice. */
+  const getFemaleVoice = (
+    voices: SpeechSynthesisVoice[],
+    langPref = 'auto',
+    specificURI = ''
+  ): SpeechSynthesisVoice | null => {
+    if (specificURI) {
+      const m = voices.find((v) => v.voiceURI === specificURI);
+      if (m) return m;
     }
-  }, []);
+    const inFemaleRegex = /neerja|swara|heera|kalpana|ananya|priya|aditi|shruti|geeta|lekhika/i;
+    const inVoices = voices.filter((v) => v.lang.startsWith('en-IN') || v.lang.startsWith('hi'));
+    const inFemale = inVoices.find((v) => inFemaleRegex.test(v.name) || inFemaleRegex.test(v.voiceURI));
+    if (inFemale) return inFemale;
 
-  const getFemaleVoice = (): SpeechSynthesisVoice | null => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
-    const voices = window.speechSynthesis.getVoices();
-    if (!voices || voices.length === 0) return null;
+    if (langPref === 'hi' || langPref === 'hinglish' || langPref === 'auto') {
+      const inAnyFemale = inVoices.find((v) => /female|woman/i.test(v.name) || inFemaleRegex.test(v.name));
+      if (inAnyFemale) return inAnyFemale;
+    }
 
-    // Prioritized regex for recognized female voices (e.g. Windows Microsoft Zira, Edge Jenny/Aria, Mac Samantha)
-    const femaleNameRegex = /zira|jenny|aria|samantha|victoria|karen|eva|ava|hazel|susan|catherine|female|woman/i;
+    const femaleNameRegex = /neerja|swara|jenny|aria|zira|samantha|victoria|karen|female|woman/i;
     const exactFemale = voices.find((v) => femaleNameRegex.test(v.name) || femaleNameRegex.test(v.voiceURI));
     if (exactFemale) return exactFemale;
 
-    // Secondary: English voices
-    const enVoices = voices.filter((v) => v.lang.startsWith('en'));
-    const enFemale = enVoices.find((v) => (v as any).gender === 'female' || femaleNameRegex.test(v.name));
-    if (enFemale) return enFemale;
-
-    return enVoices[0] || voices[0] || null;
+    return voices[0] || null;
   };
 
-  const speakText = (text: string) => {
-    if (!('speechSynthesis' in window)) return;
-    window.speechSynthesis.cancel();
-    // Clean markdown hashes and asterisks for natural reading
-    const cleanText = text.replace(/[#*`_]/g, '').trim();
-    if (!cleanText) return;
+  const speakMessage = (text: string, index?: number) => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
 
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    const femaleVoice = getFemaleVoice();
-    if (femaleVoice) {
-      utterance.voice = femaleVoice;
+    // Toggle off if already speaking this same message
+    if (speakingMessageIndex !== null && speakingMessageIndex === index) {
+      window.speechSynthesis.cancel();
+      setSpeakingMessageIndex(null);
+      
+      return;
     }
-    utterance.pitch = 1.18; // Soft, natural female pitch
-    utterance.rate = 1.0;
+
+    // Stop any current speech
+    window.speechSynthesis.cancel();
+    setSpeakingMessageIndex(null);
+    
+
+    // Clean text for natural speech (strips code fences, markdown symbols, formatting)
+    const cleanSpeech = prepareSpeechText(text, { language: 'en' });
+    if (!cleanSpeech) return;
+
+    const voices = window.speechSynthesis.getVoices();
+    const voice = getFemaleVoice(voices, 'auto');
+
+    const utterance = new SpeechSynthesisUtterance(cleanSpeech);
+    if (voice) utterance.voice = voice;
+    utterance.lang = voice?.lang || 'en-IN';
+    utterance.rate = 1.05;   // slightly faster, natural
+    utterance.pitch = 1.1;   // warm, feminine
+    utterance.volume = 1.0;
+
+    utterance.onstart = () => {
+      if (index !== undefined) setSpeakingMessageIndex(index);
+      
+    };
+    utterance.onend = () => {
+      setSpeakingMessageIndex(null);
+      
+    };
+    utterance.onerror = () => {
+      setSpeakingMessageIndex(null);
+      
+    };
+
     window.speechSynthesis.speak(utterance);
   };
 
-  // Helper to extract <think> blocks if produced by reasoning models
+
+  // Format-aware helper to extract reasoning and clean user-facing content
   const parseThinkingContent = (content: any) => {
-    const rawStr = typeof content === 'string'
-      ? content
-      : Array.isArray(content)
-      ? content.filter((p: any) => p?.type === 'text').map((p: any) => p.text || '').join('\n')
-      : String(content || '');
-    const thinkMatch = rawStr.match(/<think>([\s\S]*?)<\/think>/);
-    if (thinkMatch) {
-      const extractedThought = thinkMatch[1].trim();
-      const cleanContent = rawStr.replace(/<think>[\s\S]*?<\/think>/, '').trim();
-      return { extractedThought, cleanContent };
-    }
-    return { extractedThought: null, cleanContent: rawStr };
+    const parsed = parseReasoningAndAnswer(content, { isStreaming });
+    return {
+      extractedThought: parsed.thought,
+      cleanContent: parsed.answer,
+    };
   };
 
   return (
@@ -1659,17 +1893,21 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                             </IconButton>
                           </Tooltip>
 
-                          <Tooltip title="Read response aloud in Female Voice (Audio)" arrow>
+                          <Tooltip title={speakingMessageIndex === i ? 'Stop voice playback' : 'Read response aloud'} arrow>
                             <IconButton
                               size="small"
-                              onClick={() => speakText(cleanContent)}
+                              onClick={() => speakMessage(cleanContent, i)}
                               sx={{
-                                color: 'rgba(255,255,255,0.4)',
-                                '&:hover': { color: '#60a5fa', backgroundColor: 'rgba(255,255,255,0.06)' },
+                                color: speakingMessageIndex === i ? '#38bdf8' : 'rgba(255,255,255,0.4)',
+                                '&:hover': { color: speakingMessageIndex === i ? '#67e8f9' : '#60a5fa', backgroundColor: 'rgba(255,255,255,0.06)' },
                                 padding: '3px',
                               }}
                             >
-                              <VolumeUpIcon sx={{ fontSize: 16 }} />
+                              {speakingMessageIndex === i ? (
+                                <VolumeOffIcon sx={{ fontSize: 16, color: '#38bdf8' }} />
+                              ) : (
+                                <VolumeUpIcon sx={{ fontSize: 16 }} />
+                              )}
                             </IconButton>
                           </Tooltip>
                         </div>
@@ -2041,6 +2279,36 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
             </IconButton>
           </div>
 
+          {/* Settings Tabs */}
+          <div className="flex items-center gap-1.5 p-1 bg-white/[0.04] rounded-xl border border-white/[0.08]">
+            <button
+              type="button"
+              onClick={() => setSettingsTab('general')}
+              className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all ${
+                settingsTab === 'general'
+                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 shadow-sm'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              General & Gateway
+            </button>
+            <button
+              type="button"
+              onClick={() => setSettingsTab('extensions')}
+              className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-1.5 ${
+                settingsTab === 'extensions'
+                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 shadow-sm'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <ExtensionIcon sx={{ fontSize: 14 }} />
+              Extensions & Tools
+            </button>
+          </div>
+
+          {settingsTab === 'extensions' ? (
+            <ExtensionsManagerView />
+          ) : (
           <div className="space-y-4 text-xs">
             {/* Base URL */}
             <div>
@@ -2093,6 +2361,89 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
               <p className="text-[11px] text-slate-500 mt-1">
                 Leave blank or set to &apos;auto&apos; to let the gateway automatically select the model.
               </p>
+            </div>
+
+            {/* Permission Allowance (PA) */}
+            <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-xs font-semibold text-white flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+                    Permission Allowance (Security Policy)
+                  </h4>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Controls autonomous tool execution for both SORA Assistant chat and IDE Copilot.
+                  </p>
+                </div>
+                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                  permissionAllowance === 'full_access'
+                    ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                    : permissionAllowance === 'sandbox'
+                    ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                    : 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30'
+                }`}>
+                  {permissionAllowance === 'full_access' ? 'Full Access' : permissionAllowance === 'sandbox' ? 'Sandbox' : 'Strict'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 pt-1">
+                {/* Full access */}
+                <button
+                  type="button"
+                  onClick={() => setPermissionAllowance('full_access')}
+                  className={`p-3 rounded-xl border text-left transition-all ${
+                    permissionAllowance === 'full_access'
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200 shadow-sm'
+                      : 'bg-black/30 border-white/5 text-slate-400 hover:border-white/15 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-semibold text-white">Full access</span>
+                    {permissionAllowance === 'full_access' && <span className="text-emerald-400 text-xs font-bold">✓</span>}
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-snug">
+                    Unrestricted tool access. Automates Chrome, launches apps, and runs terminal commands freely.
+                  </p>
+                </button>
+
+                {/* Sandbox */}
+                <button
+                  type="button"
+                  onClick={() => setPermissionAllowance('sandbox')}
+                  className={`p-3 rounded-xl border text-left transition-all ${
+                    permissionAllowance === 'sandbox'
+                      ? 'bg-amber-500/15 border-amber-500/40 text-amber-200 shadow-sm'
+                      : 'bg-black/30 border-white/5 text-slate-400 hover:border-white/15 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-semibold text-white">Sandbox</span>
+                    {permissionAllowance === 'sandbox' && <span className="text-amber-400 text-xs font-bold">✓</span>}
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-snug">
+                    Workspace-confined file actions. Safe terminal commands and whitelisted apps only.
+                  </p>
+                </button>
+
+                {/* Strict */}
+                <button
+                  type="button"
+                  onClick={() => setPermissionAllowance('strict')}
+                  className={`p-3 rounded-xl border text-left transition-all ${
+                    permissionAllowance === 'strict'
+                      ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-200 shadow-sm'
+                      : 'bg-black/30 border-white/5 text-slate-400 hover:border-white/15 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-semibold text-white">Strict</span>
+                    {permissionAllowance === 'strict' && <span className="text-cyan-400 text-xs font-bold">✓</span>}
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-snug">
+                    Maximum caution. Requires explicit confirmation for state changes, commands, and app launching.
+                  </p>
+                </button>
+              </div>
             </div>
 
             {/* Status / Message */}
@@ -2176,18 +2527,35 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
               </button>
             </div>
 
-            {/* Memory management now lives inside Settings */}
+            {/* User Memories & Personal Preferences (User-Editable) */}
             <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] overflow-hidden">
               <div className="px-4 py-3 border-b border-white/[0.08]">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <h4 className="text-xs font-semibold text-white">Memory & personalization</h4>
-                    <p className="text-[11px] text-slate-500 mt-1">Manage what Sora retains across conversations.</p>
+                    <h4 className="text-xs font-semibold text-white">User memories & personal preferences</h4>
+                    <p className="text-[11px] text-slate-500 mt-1">Manage what Sora remembers about your domain, preferences, and coding standards.</p>
                   </div>
-                  <span className="text-[10px] rounded-full border border-white/10 px-2 py-1 text-slate-400">{memories.length} saved</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] rounded-full border border-white/10 px-2 py-1 text-slate-400">{memories.length} saved</span>
+                    {memories.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!window.confirm("Delete all saved memories? Sora's permanent identity and application defaults will remain completely intact.")) return;
+                          for (const m of memories) {
+                            await deleteMemory(m.id);
+                          }
+                          await loadMemories();
+                        }}
+                        className="text-[10px] text-rose-400 hover:text-rose-300 px-2 py-0.5 rounded border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 transition-colors"
+                      >
+                        Clear all memories
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
-                      <div className="p-4 space-y-5">
+              <div className="p-4 space-y-5">
 
           {/* Quick-add a new memory */}
           <div className="space-y-2.5">
@@ -2321,6 +2689,8 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
         </div>
             </div>
           </div>
+
+          )}
 
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.08]">
             <button

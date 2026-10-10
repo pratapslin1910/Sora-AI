@@ -209,10 +209,12 @@ export class FreeLLMAPIProvider {
       const data = await res.json();
       const choice = data?.choices?.[0];
       const assistantMessage = choice?.message || { role: 'assistant', content: '' };
+      const reasoning = assistantMessage.reasoning_content || assistantMessage.reasoning || null;
 
       return {
         role: assistantMessage.role || 'assistant',
         content: assistantMessage.content || '',
+        reasoning,
         model: data?.model || chosenModel,
         usage: data?.usage,
       };
@@ -229,6 +231,7 @@ export class FreeLLMAPIProvider {
    * @param {number} [options.temperature]
    * @param {AbortSignal} [options.signal]
    * @param {function(string): void} [options.onToken] Callback when a content token chunk arrives
+   * @param {function(string): void} [options.onReasoning] Callback when a reasoning token chunk arrives
    * @param {function(): void} [options.onDone] Callback when stream finishes
    * @param {function(Error): void} [options.onError] Callback when error occurs
    * @returns {Promise<string>} Full accumulated content
@@ -239,6 +242,7 @@ export class FreeLLMAPIProvider {
     temperature,
     signal,
     onToken = () => {},
+    onReasoning = () => {},
     onDone = () => {},
     onError = () => {},
   } = {}) {
@@ -308,6 +312,10 @@ export class FreeLLMAPIProvider {
             try {
               const chunkJson = JSON.parse(dataStr);
               const delta = chunkJson?.choices?.[0]?.delta;
+              if (delta?.reasoning_content || delta?.reasoning) {
+                const rChunk = delta.reasoning_content || delta.reasoning;
+                onReasoning(rChunk);
+              }
               if (delta?.content) {
                 fullText += delta.content;
                 onToken(delta.content);
@@ -328,6 +336,10 @@ export class FreeLLMAPIProvider {
             try {
               const chunkJson = JSON.parse(dataStr);
               const delta = chunkJson?.choices?.[0]?.delta;
+              if (delta?.reasoning_content || delta?.reasoning) {
+                const rChunk = delta.reasoning_content || delta.reasoning;
+                onReasoning(rChunk);
+              }
               if (delta?.content) {
                 fullText += delta.content;
                 onToken(delta.content);
