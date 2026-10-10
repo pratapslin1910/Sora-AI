@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { exec } from 'node:child_process';
 import { FreeLLMAPIProvider } from './FreeLLMAPIProvider.js';
-import { listChats, getChatById, saveChat, deleteChat, deleteAllChats, searchChats } from './chatStore.js';
+import { listChats, getChatById, saveChat, deleteChat, deleteAllChats, deleteChatsOlderThan, searchChats } from './chatStore.js';
 import { performWebSearch, readSiteContent } from './webSearch.js';
 import {
   listMemories,
@@ -482,6 +482,10 @@ export async function handleApiRequest(req, res, customProvider) {
   if (req.method === 'GET' && pathname === '/api/chats') {
     try {
       const opts = { baseUrl: provider.baseUrl, apiKey: provider.apiKey };
+      const savedSettings = loadSettings();
+      if (savedSettings.autoDeleteChats && Number(savedSettings.chatRetentionDays) > 0) {
+        await deleteChatsOlderThan(Number(savedSettings.chatRetentionDays), opts);
+      }
       const chats = await listChats(opts);
       jsonResponse(res, 200, { ok: true, chats });
     } catch (err) {
