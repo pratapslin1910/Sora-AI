@@ -200,18 +200,8 @@ export async function saveChat(chat, { baseUrl = 'http://127.0.0.1:31415/v1', ap
       .limit(1)
       .toArray();
 
-    // If no existing record with this ID, check if a chat with the exact same summary exists
-    if (!existing.length && summary && summary !== 'Untitled conversation') {
-      const sameSummary = await table
-        .query()
-        .where(`summary = '${summary.replace(/'/g, "''")}'`)
-        .limit(1)
-        .toArray();
-      if (sameSummary.length) {
-        existing = sameSummary;
-        id = existing[0].id; // Reuse existing ID to avoid dual duplicate
-      }
-    }
+    // Only reuse a session when the caller supplies its ID. Separate chats may
+    // legitimately begin with the same prompt and must remain independent.
 
     const record = {
       id,
