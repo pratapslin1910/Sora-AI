@@ -143,18 +143,12 @@ export async function listChats({ baseUrl = 'http://127.0.0.1:31415/v1', apiKey 
 
     // Deduplicate in case of duplicate IDs or duplicate messages/titles
     const seenIds = new Set();
-    const seenTitles = new Set();
     const unique = [];
 
     for (const r of rows) {
       if (seenIds.has(r.id)) continue;
       seenIds.add(r.id);
-
-      // Prevent duplicate identical titles in recent list
-      const titleKey = (r.title || '').trim().toLowerCase();
-      if (titleKey && seenTitles.has(titleKey)) continue;
-      if (titleKey) seenTitles.add(titleKey);
-
+      // Different conversations may legitimately share the same title.
       unique.push(normalizeRow(r));
     }
     return unique;
@@ -240,6 +234,24 @@ export async function saveChat(chat, { baseUrl = 'http://127.0.0.1:31415/v1', ap
     console.error('[ChatStore] saveChat error:', err.message);
     throw err;
   }
+}
+
+/**
+ * Delete every saved chat. This intentionally clears persisted conversation
+ * history only; it does not touch long-term memories or workspace files.
+ */
+export async function deleteAllChats({ baseUrl, apiKey } = {}) {
+  const table = await getTable(baseUrl, apiKey);
+  const rows = await table.query().limit(100000).toArray();
+  if (rows.length === 0) return 0;
+  // Delete using unique IDs so all stored sessions (including same-title chats)
+  // are removed, while avoiding an unbounded predicate over arbitrary content.
+  let deleted = 0;
+  for (const row of rows) {
+    await table.delete(`id = '${String(row.id).replace(/'/g, "''")}'`);
+    deleted += 1;
+  }
+  return deleted;
 }
 
 /**
