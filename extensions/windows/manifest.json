@@ -1,0 +1,87 @@
+{
+  "id": "sora-windows",
+  "name": "Windows Automation",
+  "version": "1.0.0",
+  "description": "Launch applications, navigate Windows Settings, and explore files with Windows File Explorer.",
+  "author": "SORA Core",
+  "entry": "index.js",
+  "permissions": ["apps", "files"],
+  "configuration": {
+    "defaultExplorerDirectory": {
+      "type": "string",
+      "default": "",
+      "description": "Default directory to open in File Explorer if none is provided"
+    }
+  },
+  "tools": [
+    {
+      "name": "windows_launch_app",
+      "description": "Launch an application on Windows (e.g. 'notepad', 'calc', 'explorer', 'code').",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "appName": {
+            "type": "string",
+            "description": "Executable name, application alias, or full file path"
+          },
+          "args": {
+            "type": "array",
+            "description": "Optional command line arguments (e.g. ['-d', 'D:\\\\path'] or argument string)"
+          }
+        },
+        "required": ["appName"]
+      }
+    },
+    {
+      "name": "windows_close_app",
+      "description": "Gracefully terminate or close a running application process by name.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "processName": {
+            "type": "string",
+            "description": "Process name to terminate (e.g. 'notepad', 'calc', 'msedge')"
+          }
+        },
+        "required": ["processName"]
+      }
+    },
+    {
+      "name": "windows_open_settings",
+      "description": "Open Windows Settings pages (e.g. apps, network, display, bluetooth, windowsupdate).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string",
+            "description": "Settings category (e.g. 'apps', 'network', 'display', 'bluetooth', 'windowsupdate', or direct 'ms-settings:' URI)"
+          }
+        },
+        "required": ["page"]
+      }
+    },
+    {
+      "name": "windows_file_explorer",
+      "description": "Open a folder, select a file, or search files in Windows File Explorer.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["open", "select", "search"],
+            "description": "Action: 'open' folder, 'select' file, or 'search' directory"
+          },
+          "path": {
+            "type": "string",
+            "description": "Target folder or file path"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search keyword when action is 'search'"
+          }
+        },
+        "required": ["action"]
+      }
+    }
+  ]
+}

@@ -29,7 +29,11 @@ import {
   renameWorkspaceItem,
   deleteWorkspaceItem,
   searchWorkspaceFiles,
+  parseReasoningAndAnswer,
+  getSettings,
 } from '../../services/chatService';
+import { executeExtensionTool, fetchExtensionTools } from '../../services/extensionService';
+import { parseToolCallFromText, stripToolCallsFromText, sanitizeContentForModel } from '../../utils/toolParser';
 import { OpenTab } from './types';
 
 export interface AgentToolCall {
@@ -42,7 +46,8 @@ export interface AgentToolCall {
     | 'rename_item'
     | 'delete_item'
     | 'run_command'
-    | 'search_workspace';
+    | 'search_workspace'
+    | string;
   args: Record<string, any>;
   status: 'running' | 'done' | 'error';
   result?: any;
@@ -92,6 +97,7 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
   const abortControllerRef = useRef<AbortController | null>(null);
   const isAgentActiveRef = useRef<boolean>(false);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
+  const permissionAllowanceRef = useRef<'full_access' | 'sandbox' | 'strict'>('full_access');
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -236,6 +242,21 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
       if (tool === 'delete_item') {
         const path = args.path;
         if (!path) return { ok: false, error: 'Path argument is required' };
+
+        // Enforce Permission Allowance
+        if (permissionAllowanceRef.current === 'strict' && !args.__confirmed) {
+          return {
+            ok: false,
+            error: `Strict Mode: Deleting "${path}" requires explicit confirmation.`,
+          };
+        }
+        if (permissionAllowanceRef.current === 'sandbox' && (path.includes('..') || path.startsWith('/') || /^[a-zA-Z]:/.test(path))) {
+          return {
+            ok: false,
+            error: `Sandbox Mode: Deletion restricted to relative paths within active workspace.`,
+          };
+        }
+
         const res = await deleteWorkspaceItem(path);
         if (res.ok) {
           onRefreshExplorer();
@@ -250,6 +271,24 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
       if (tool === 'run_command') {
         const command = args.command;
         if (!command) return { ok: false, error: 'Command argument is required' };
+
+        // Enforce Permission Allowance
+        if (permissionAllowanceRef.current === 'strict' && !args.__confirmed) {
+          return {
+            ok: false,
+            error: `Strict Mode: Executing command "${command}" requires explicit confirmation.`,
+          };
+        }
+        if (permissionAllowanceRef.current === 'sandbox') {
+          const dangerousPattern = /\b(?:format|del\s+\/[sfq]|rmdir\s+\/[sq]|rm\s+-rf|shutdown|reboot)\b/i;
+          if (dangerousPattern.test(command)) {
+            return {
+              ok: false,
+              error: `Sandbox Mode: Command "${command}" is blocked by sandbox safety policy. Switch to Full Access in Settings to allow.`,
+            };
+          }
+        }
+
         // Single execution: onRunTerminalCommand runs in workspaceRoot and mirrors in terminal history
         const res = await onRunTerminalCommand(command);
         return {
@@ -274,6 +313,16 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
         };
       }
 
+      // ── Modular Extension Tools Delegation ─────────────────────────────────
+      try {
+        const extRes = await executeExtensionTool(tool, args);
+        if (extRes && (extRes.ok !== undefined || extRes.error !== undefined)) {
+          return extRes;
+        }
+      } catch (extErr: any) {
+        return { ok: false, error: extErr?.message || `Extension tool execution failed: ${tool}` };
+      }
+
       return { ok: false, error: `Unknown tool: ${tool}` };
     } catch (err: any) {
       return { ok: false, error: err.message || 'Tool execution error' };
@@ -283,34 +332,6 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
     }
   };
 
-  // ── Parse Tool Call from Agent Output ────────────────────────────────────
-  const parseToolCallFromText = (
-    text: string
-  ): { tool: string; args: Record<string, any>; rawBlock: string } | null => {
-    // 1. Look for <tool_call>...</tool_call>
-    const matchTag = text.match(/<tool_call>([\s\S]*?)<\/tool_call>/i);
-    if (matchTag) {
-      try {
-        const parsed = JSON.parse(matchTag[1].trim());
-        if (parsed.tool) {
-          return { tool: parsed.tool, args: parsed.args || {}, rawBlock: matchTag[0] };
-        }
-      } catch {}
-    }
-
-    // 2. Look for ```tool_call ... ```
-    const matchCodeBlock = text.match(/```(?:tool_call|json)\s*\n([\s\S]*?)\n```/i);
-    if (matchCodeBlock) {
-      try {
-        const parsed = JSON.parse(matchCodeBlock[1].trim());
-        if (parsed.tool) {
-          return { tool: parsed.tool, args: parsed.args || {}, rawBlock: matchCodeBlock[0] };
-        }
-      } catch {}
-    }
-
-    return null;
-  };
 
   // ── Autonomous Multi-Step Agent Loop ─────────────────────────────────────
   const runAgentTask = useCallback(
@@ -324,6 +345,23 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
 
       const currentImage = attachedImage;
       setAttachedImage(null);
+
+      let extensionToolsPrompt = '';
+      try {
+        const extData = await fetchExtensionTools();
+        if (extData && extData.promptFormat) {
+          extensionToolsPrompt = '\n\n' + extData.promptFormat;
+        }
+      } catch {}
+
+      let currentAllowance = 'full_access';
+      try {
+        const s = await getSettings();
+        if (s.permissionAllowance) {
+          currentAllowance = s.permissionAllowance;
+        }
+      } catch {}
+      permissionAllowanceRef.current = currentAllowance as any;
 
       const userDisplayPrompt = currentImage
         ? `${taskPrompt || 'Analyze this attached image'}\n[Attached Image: ${currentImage.name}]`
@@ -345,12 +383,14 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
         content: `You are Sora AI Autonomous Agent, embedded in the user's workspace on Windows.
 Active Workspace Root: "${workspaceRoot}".
 Active File: "${activeTab ? activeTab.path : 'None'}".
+Permission Allowance Mode: ${currentAllowance.toUpperCase()}.
 
 You have FULL WORKSPACE FREEDOM and TERMINAL FREEDOM:
 - You can inspect, read, create, edit, rename, and delete files/folders across all subfolders.
 - You can run terminal commands (npm test, npm install, build scripts, git commands, python, etc.) to debug and build autonomously.
 - Retain safeguards against catastrophic system wipes.
 - NEVER pretend, guess, or hallucinate files. Always use tools to verify real files.
+- Built-in capabilities (memory search, recall, storage) are automatic internal background systems, not tools.
 - Never mention, compare, or reference other AI assistants, IDE agents, IDE products, or competitors by name. Describe Sora's capabilities directly.
 - Do not claim an action succeeded until the tool has returned a successful result.
 - When reviewing code, never call something a syntax error based only on visual suspicion or an AI guess.
@@ -385,7 +425,7 @@ When you need to perform an action, output only one tool call formatted exactly 
 
 After you output a <tool_call>, STOP and wait for the system to execute it.
 You will receive the tool result in a <tool_result> block.
-When completely finished, provide your final answer with no further tool calls.`,
+When completely finished, provide your final answer with no further tool calls.` + extensionToolsPrompt,
       };
 
       const userPayloadContent: ChatMessage['content'] = currentImage
@@ -428,10 +468,9 @@ When completely finished, provide your final answer with no further tool calls.`
                 const copy = [...prev];
                 const last = copy[copy.length - 1];
                 if (last && last.role === 'assistant') {
-                  const cleanText = stepResponseText
-                    .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
-                    .trim();
-                  last.content = cleanText;
+                  const cleanText = stripToolCallsFromText(stepResponseText);
+                  const parsed = parseReasoningAndAnswer(cleanText, { isStreaming: true });
+                  last.content = parsed.answer;
                 }
                 return copy;
               });
@@ -491,10 +530,20 @@ When completely finished, provide your final answer with no further tool calls.`
             return copy;
           });
 
-          // Feed tool result back to internal conversation
+          // Feed tool result back to internal conversation.
+          // IMPORTANT: Strip the raw <tool_call> block before storing as assistant history.
+          // An empty assistant content causes upstream LLMs to return:
+          // "model output must contain either output text or tool calls".
+          const assistantHistoryContent = (() => {
+            const withoutBlock = stripToolCallsFromText(stepResponseText);
+            return withoutBlock.length > 0
+              ? withoutBlock
+              : `I used the ${toolCall.tool} tool to carry out the action.`;
+          })();
+
           internalChat.push({
             role: 'assistant',
-            content: stepResponseText,
+            content: assistantHistoryContent,
           });
 
           internalChat.push({
@@ -503,11 +552,13 @@ When completely finished, provide your final answer with no further tool calls.`
               toolResult.ok ? toolResult.data : { error: toolResult.error },
               null,
               2
-            )}\n</tool_result>\n(Please inspect this result and proceed to the next action or give final answer.)`,
+            )}\n</tool_result>\nIn one or two warm, natural sentences, tell the user what you just did in your Sora persona. Output only conversational text — no <tool_call> blocks, no [Called tool:] markers, no JSON, no markdown code fences.`,
           });
         } else {
           // No more tool calls: task completed!
-          finalAssistantText = stepResponseText;
+          const cleanToolText = stripToolCallsFromText(stepResponseText);
+          const parsed = parseReasoningAndAnswer(cleanToolText, { isStreaming: false });
+          finalAssistantText = parsed.answer || cleanToolText;
           setMessages((prev) => {
             const copy = [...prev];
             const last = copy[copy.length - 1];

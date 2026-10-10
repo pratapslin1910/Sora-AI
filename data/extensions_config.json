@@ -1,0 +1,17 @@
+{
+  "sora-chrome": {
+    "enabled": true
+  },
+  "sora-terminal": {
+    "enabled": true,
+    "config": {
+      "timeoutSeconds": 45
+    },
+    "permissions": {
+      "terminal": true
+    }
+  },
+  "sora-windows": {
+    "enabled": true
+  }
+}

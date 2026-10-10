@@ -1,0 +1,95 @@
+{
+  "id": "sora-chrome",
+  "name": "Chrome Automation",
+  "version": "1.0.0",
+  "description": "Automate Google Chrome navigation, web search, tab & window management, and page extraction.",
+  "author": "SORA Core",
+  "entry": "index.js",
+  "permissions": ["browser", "network"],
+  "configuration": {
+    "chromeExecutablePath": {
+      "type": "string",
+      "default": "",
+      "description": "Custom path to chrome.exe (leave blank for automatic Windows detection)"
+    },
+    "defaultSearchEngine": {
+      "type": "string",
+      "default": "https://www.google.com/search?q=",
+      "description": "Search engine URL prefix for search queries"
+    }
+  },
+  "tools": [
+    {
+      "name": "chrome_search_and_navigate",
+      "description": "Search the web or navigate to a target URL in Google Chrome.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The URL to navigate to, or search query (e.g. 'https://github.com' or 'AI research')"
+          },
+          "newTab": {
+            "type": "boolean",
+            "description": "Whether to open in a new tab"
+          }
+        },
+        "required": ["url"]
+      }
+    },
+    {
+      "name": "chrome_manage_tabs",
+      "description": "Manage Chrome tabs: open a new tab or list navigation actions. Use this ONLY to open a blank new tab. If the user wants to search for something or navigate to a URL, use chrome_search_and_navigate instead.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["open", "close", "list"],
+            "description": "Tab action to perform ('open' opens a new blank tab, 'close', 'list')"
+          },
+          "url": {
+            "type": "string",
+            "description": "URL to open when action is 'open'. Omit or leave blank to open the browser's default new-tab page. Do NOT pass 'about:blank' here – simply omit the url field for a blank new tab."
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "chrome_manage_windows",
+      "description": "Open a new Chrome window or private Incognito window.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "incognito": {
+            "type": "boolean",
+            "description": "Open in Incognito / private browsing mode"
+          },
+          "url": {
+            "type": "string",
+            "description": "Initial URL to open in the new window"
+          }
+        }
+      }
+    },
+    {
+      "name": "chrome_interact_page",
+      "description": "Extract text, headlines, and readable content from a web page.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The URL of the webpage to fetch and inspect"
+          },
+          "maxLength": {
+            "type": "number",
+            "description": "Maximum number of extracted characters to return (default: 4000)"
+          }
+        },
+        "required": ["url"]
+      }
+    }
+  ]
+}

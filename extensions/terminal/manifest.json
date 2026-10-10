@@ -1,0 +1,86 @@
+{
+  "id": "sora-terminal",
+  "name": "Terminal Executor",
+  "version": "1.0.0",
+  "description": "Execute terminal and PowerShell commands with configurable permissions, output capture, and safety policies.",
+  "author": "SORA Core",
+  "entry": "index.js",
+  "permissions": ["terminal"],
+  "configuration": {
+    "defaultShell": {
+      "type": "string",
+      "default": "powershell",
+      "enum": ["powershell", "cmd"],
+      "description": "Default shell environment for command execution"
+    },
+    "timeoutSeconds": {
+      "type": "number",
+      "default": 30,
+      "description": "Command execution timeout in seconds"
+    },
+    "requireConfirmation": {
+      "type": "boolean",
+      "default": false,
+      "description": "Require explicit user confirmation for potentially destructive operations"
+    },
+    "openInWindow": {
+      "type": "boolean",
+      "default": false,
+      "description": "Run commands in a visible Command Prompt window on the desktop instead of running silently in the background"
+    }
+  },
+  "tools": [
+    {
+      "name": "terminal_execute",
+      "description": "Execute a shell or PowerShell command with output capture, exit code reporting, and execution status.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Command line string to execute"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Working directory (defaults to current active workspace root)"
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "Command timeout in milliseconds (defaults to 30000)"
+          },
+          "openInWindow": {
+            "type": "boolean",
+            "description": "Open a visible Command Prompt window on the desktop to execute the command visibly instead of running internally"
+          }
+        },
+        "required": ["command"]
+      }
+    },
+    {
+      "name": "terminal_open",
+      "description": "Open a visible Command Prompt (cmd.exe), Windows Terminal (wt.exe), or PowerShell window on the user's desktop, optionally navigated to a directory and/or executing a command in the opened window.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Optional command to execute inside the opened terminal window (e.g. 'node -v', 'dir', 'npm start')"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Directory to navigate the opened terminal to (defaults to current active workspace root)"
+          },
+          "shell": {
+            "type": "string",
+            "enum": ["cmd", "wt", "powershell"],
+            "description": "Terminal shell to open (defaults to 'cmd')"
+          },
+          "keepOpen": {
+            "type": "boolean",
+            "description": "Keep terminal window open after running command so user can see output (default: true)"
+          }
+        }
+      }
+    }
+  ]
+}

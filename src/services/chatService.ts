@@ -58,12 +58,20 @@ export interface GatewaySettings {
   model: string;
   autoDeleteChats: boolean;
   chatRetentionDays: number;
+  systemPromptVersion?: string;
+  defaultIdentity?: string;
+  permissionAllowance?: 'full_access' | 'sandbox' | 'strict';
 }
+
+export { parseReasoningAndAnswer, deduplicateAnswer } from '../utils/responseParser';
+export type { ParsedResponse } from '../utils/responseParser';
+export { prepareSpeechText } from '../utils/speechPreparation';
+export type { SpeechPreparationOptions } from '../utils/speechPreparation';
 
 export async function getSettings(): Promise<GatewaySettings> {
   try {
     const res = await fetch('/api/settings');
-    if (!res.ok) return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '', autoDeleteChats: false, chatRetentionDays: 30 };
+    if (!res.ok) return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '', autoDeleteChats: false, chatRetentionDays: 30, permissionAllowance: 'full_access' };
     const data = await res.json();
     return {
       baseUrl: data.baseUrl || '',
@@ -72,9 +80,12 @@ export async function getSettings(): Promise<GatewaySettings> {
       model: data.model || '',
       autoDeleteChats: Boolean(data.autoDeleteChats),
       chatRetentionDays: Number(data.chatRetentionDays) || 30,
+      systemPromptVersion: data.systemPromptVersion || '2026.1.0',
+      defaultIdentity: data.defaultIdentity || 'Sora',
+      permissionAllowance: data.permissionAllowance || 'full_access',
     };
   } catch {
-    return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '', autoDeleteChats: false, chatRetentionDays: 30 };
+    return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '', autoDeleteChats: false, chatRetentionDays: 30, permissionAllowance: 'full_access' };
   }
 }
 
@@ -84,6 +95,7 @@ export async function saveSettings(settings: {
   model?: string;
   autoDeleteChats?: boolean;
   chatRetentionDays?: number;
+  permissionAllowance?: 'full_access' | 'sandbox' | 'strict';
 }): Promise<boolean> {
   try {
     const res = await fetch('/api/settings', {
@@ -96,7 +108,6 @@ export async function saveSettings(settings: {
     return false;
   }
 }
-
 
 export interface RecalledContextPayload {
   memories: MemoryItem[];
@@ -118,6 +129,7 @@ export interface StreamChatOptions {
   currentChatId?: string | null;
   onRecall?: (recalled: RecalledContextPayload) => void;
   onMemorySaved?: (memories: MemoryItem[]) => void;
+  onReasoning?: (thought: string) => void;
   onToken: (token: string) => void;
   onDone: () => void;
   onError: (errorMsg: string) => void;
@@ -134,6 +146,7 @@ export async function streamChatMessage(
     currentChatId = null,
     onRecall,
     onMemorySaved,
+    onReasoning,
     onToken,
     onDone,
     onError,
@@ -200,6 +213,9 @@ export async function streamChatMessage(
           if (payload.memorySaved && onMemorySaved) {
             onMemorySaved(payload.memorySaved);
           }
+          if (payload.reasoning && onReasoning) {
+            onReasoning(payload.reasoning);
+          }
           if (payload.token) {
             onToken(payload.token);
           }
@@ -227,6 +243,9 @@ export async function streamChatMessage(
         }
         if (payload.memorySaved && onMemorySaved) {
           onMemorySaved(payload.memorySaved);
+        }
+        if (payload.reasoning && onReasoning) {
+          onReasoning(payload.reasoning);
         }
         if (payload.token) {
           onToken(payload.token);

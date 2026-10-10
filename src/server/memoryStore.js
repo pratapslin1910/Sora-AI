@@ -19,6 +19,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { searchChatExcerpts } from './chatStore.js';
+import { resolveConflictingMemories } from './systemPrompt.js';
 
 const DATA_DIR = path.join(os.homedir(), '.sora_v1');
 const MEMORIES_FILE = path.join(DATA_DIR, 'memories.json');
@@ -93,14 +94,20 @@ const DEFAULT_MEMORIES = [
   },
 ];
 
+let _memoriesCache = null;
+
 /** Read memories from disk */
 export function loadMemoriesFromDisk() {
   try {
     if (!fs.existsSync(MEMORIES_FILE)) {
       fs.writeFileSync(MEMORIES_FILE, JSON.stringify(DEFAULT_MEMORIES, null, 2), 'utf-8');
+      _memoriesCache = [...DEFAULT_MEMORIES];
       return [...DEFAULT_MEMORIES];
     }
     const raw = fs.readFileSync(MEMORIES_FILE, 'utf-8');
+    if (!raw.trim()) {
+      return _memoriesCache ? [..._memoriesCache] : [...DEFAULT_MEMORIES];
+    }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
       let changed = false;
@@ -119,13 +126,17 @@ export function loadMemoriesFromDisk() {
         }
         return m;
       });
+      _memoriesCache = updated;
       if (changed) {
         saveMemoriesToDisk(updated);
       }
       return updated;
     }
-    return [...DEFAULT_MEMORIES];
+    return _memoriesCache ? [..._memoriesCache] : [...DEFAULT_MEMORIES];
   } catch (err) {
+    if (_memoriesCache) {
+      return [..._memoriesCache];
+    }
     console.warn('[MemoryStore] loadMemoriesFromDisk error, using defaults:', err.message);
     return [...DEFAULT_MEMORIES];
   }
@@ -133,14 +144,27 @@ export function loadMemoriesFromDisk() {
 
 /** Save memories to disk safely */
 export function saveMemoriesToDisk(memories) {
+  _memoriesCache = memories;
+  const json = JSON.stringify(memories, null, 2);
+  const tmpFile = `${MEMORIES_FILE}.tmp.${Date.now()}`;
   try {
-    const tmpFile = `${MEMORIES_FILE}.tmp.${Date.now()}`;
-    fs.writeFileSync(tmpFile, JSON.stringify(memories, null, 2), 'utf-8');
-    fs.renameSync(tmpFile, MEMORIES_FILE);
+    fs.writeFileSync(tmpFile, json, 'utf-8');
+    try {
+      fs.renameSync(tmpFile, MEMORIES_FILE);
+    } catch {
+      // Windows EPERM/EBUSY fallback: write directly
+      fs.writeFileSync(MEMORIES_FILE, json, 'utf-8');
+      try { fs.unlinkSync(tmpFile); } catch {}
+    }
     return true;
   } catch (err) {
-    console.error('[MemoryStore] saveMemoriesToDisk error:', err.message);
-    return false;
+    try {
+      fs.writeFileSync(MEMORIES_FILE, json, 'utf-8');
+      return true;
+    } catch (fallbackErr) {
+      console.error('[MemoryStore] saveMemoriesToDisk error:', fallbackErr.message);
+      return false;
+    }
   }
 }
 
@@ -402,7 +426,8 @@ export async function recallContextForQuery(
   const memoryMap = new Map();
   for (const m of allPinned) memoryMap.set(m.id, m);
   for (const m of relevantMemories) memoryMap.set(m.id, m);
-  const recalledMemories = Array.from(memoryMap.values());
+  const rawMemories = Array.from(memoryMap.values());
+  const recalledMemories = resolveConflictingMemories(rawMemories);
 
   // 3. Search previous chat sessions for relevant excerpts
   let chatExcerpts = [];
