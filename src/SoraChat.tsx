@@ -52,6 +52,7 @@ import {
   listChatHistory,
   saveChatSession,
   deleteChatSession,
+  deleteAllChatHistory,
   searchChatHistory,
   fetchWebSearch,
   readSiteUrl,
@@ -207,9 +208,11 @@ const MarkdownContent = ({ content }: { content: string }) => {
 export interface SoraChatProps {
   initialPrompt?: string;
   onClearInitialPrompt?: () => void;
+  settingsOpen?: boolean;
+  onSettingsOpenChange?: (open: boolean) => void;
 }
 
-const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) => {
+const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, onSettingsOpenChange = () => {} }: SoraChatProps = {}) => {
   const [messages, setMessages] = useState<MessageWithThinking[]>([]);
   const [input, setInput] = useState('');
 
@@ -232,7 +235,6 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
 
   // ── Memory Bank state ────────────────────────────────────────────────────
   const [memories, setMemories] = useState<MemoryItem[]>([]);
-  const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
   const [memoryInput, setMemoryInput] = useState('');
   const [memorySaveType, setMemorySaveType] = useState<MemoryItem['type']>('instruction');
   const [lastRecalled, setLastRecalled] = useState<RecalledContextPayload | null>(null);
@@ -480,11 +482,14 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
   }, []);
 
   // ── AI Gateway Settings (Personalized endpoint & API Key) ────────────────
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsBaseUrl, setSettingsBaseUrl] = useState('');
   const [settingsApiKey, setSettingsApiKey] = useState('');
   const [settingsModel, setSettingsModel] = useState('');
   const [settingsApiKeySet, setSettingsApiKeySet] = useState(false);
+  const [autoDeleteChats, setAutoDeleteChats] = useState(false);
+  const [chatRetentionDays, setChatRetentionDays] = useState(30);
+  const [historyDeleting, setHistoryDeleting] = useState(false);
+  const [historyActionMsg, setHistoryActionMsg] = useState<{ text: string; error?: boolean } | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaveMsg, setSettingsSaveMsg] = useState<{ text: string; error?: boolean } | null>(null);
 
@@ -495,6 +500,8 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
       setSettingsApiKey(s.apiKeyMasked || '');
       setSettingsApiKeySet(Boolean(s.apiKeySet));
       setSettingsModel(s.model || '');
+      setAutoDeleteChats(Boolean(s.autoDeleteChats));
+      setChatRetentionDays(Math.max(1, Number(s.chatRetentionDays) || 30));
     } catch {
       // ignore
     }
@@ -512,11 +519,14 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
         baseUrl: settingsBaseUrl.trim(),
         apiKey: settingsApiKey.trim(),
         model: settingsModel.trim(),
+        autoDeleteChats,
+        chatRetentionDays,
       });
       if (ok) {
         setSettingsSaveMsg({ text: 'Settings saved! Gateway reconnected.' });
         await refreshHealth();
         await loadSettingsData();
+        await loadHistory();
         setTimeout(() => {
           setSettingsSaveMsg(null);
         }, 3000);
@@ -1298,24 +1308,13 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
 
         {/* Memory Bank & Settings quick buttons PINNED CLEANLY AT THE BOTTOM */}
         <div className="p-2.5 border-t border-[#222222] bg-[#0c0c0c] shrink-0 space-y-2">
-          <div className="grid grid-cols-2 gap-1.5">
-            <button
-              onClick={() => setMemoryPanelOpen(true)}
-              className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#141414] hover:bg-[#1a1a1a] border border-[#27272a] hover:border-[#383838] transition-all group"
-            >
-              <PsychologyAltIcon sx={{ fontSize: 15 }} className="text-[#A1A1AA] group-hover:text-white flex-shrink-0" />
-              <span className="text-xs text-[#D4D4D8] font-medium group-hover:text-white">Memory</span>
-              {memories.length > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full bg-[#222222] text-[10px] font-bold text-[#E4E4E7] border border-[#333333]">{memories.length}</span>
-              )}
-            </button>
-
+          <div>
             <button
               onClick={() => {
                 loadSettingsData();
-                setSettingsOpen(true);
+                onSettingsOpenChange(true);
               }}
-              className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#141414] hover:bg-[#1a1a1a] border border-[#27272a] hover:border-[#383838] transition-all group"
+              className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#141414] hover:bg-[#1a1a1a] border border-[#27272a] hover:border-[#383838] transition-all group"
             >
               <SettingsIcon sx={{ fontSize: 15 }} className="text-[#A1A1AA] group-hover:text-white flex-shrink-0" />
               <span className="text-xs text-[#D4D4D8] font-medium group-hover:text-white">Settings</span>
@@ -2009,179 +2008,10 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
         )}
       </Dialog>
 
-      {/* ─── Memory Bank Modal Panel ─────────────────────────────────── */}
-      <Dialog
-        open={memoryPanelOpen}
-        onClose={() => setMemoryPanelOpen(false)}
-        maxWidth="sm"
-        fullWidth
-        slotProps={{
-          paper: {
-            sx: {
-              background: '#0c0f1a',
-              border: '1px solid rgba(99, 102, 241, 0.25)',
-              borderRadius: '16px',
-              color: '#e2e8f0',
-              boxShadow: '0 25px 80px rgba(0,0,0,0.7)',
-              overflow: 'hidden',
-            },
-          },
-        }}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07] bg-indigo-950/30">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-indigo-600/30 flex items-center justify-center">
-              <PsychologyAltIcon sx={{ fontSize: 18, color: '#818cf8' }} />
-            </div>
-            <div>
-              <span className="text-sm font-bold text-white">Memory Bank</span>
-              <p className="text-[10px] text-indigo-300 mt-0">Sora remembers across all chats</p>
-            </div>
-          </div>
-          <IconButton size="small" onClick={() => setMemoryPanelOpen(false)} sx={{ color: '#94a3b8', '&:hover': { color: '#fff' } }}>
-            <CloseIcon sx={{ fontSize: 18 }} />
-          </IconButton>
-        </div>
-
-        <div className="p-5 space-y-5 max-h-[70vh] overflow-y-auto custom-scrollbar">
-
-          {/* Quick-add a new memory */}
-          <div className="space-y-2.5">
-            <p className="text-xs font-semibold text-indigo-300 uppercase tracking-widest">Add New Memory</p>
-
-            {/* Type selector */}
-            <div className="flex gap-1.5 flex-wrap">
-              {(['instruction', 'code', 'fact', 'message'] as MemoryItem['type'][]).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setMemorySaveType(t)}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold capitalize transition-all border ${
-                    memorySaveType === t
-                      ? 'bg-indigo-600/50 border-indigo-400/60 text-indigo-100'
-                      : 'bg-white/[0.04] border-white/[0.07] text-slate-400 hover:text-white hover:border-white/20'
-                  }`}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-
-            <textarea
-              value={memoryInput}
-              onChange={(e) => setMemoryInput(e.target.value)}
-              placeholder={
-                memorySaveType === 'instruction'
-                  ? 'e.g. Always explain code with comments. Never use inline styles.'
-                  : memorySaveType === 'code'
-                  ? 'e.g. ```python\ndef calculate_pnl(entry, exit): return exit - entry\n```'
-                  : memorySaveType === 'fact'
-                  ? 'e.g. My trading account uses MetaTrader 5 with USD base currency.'
-                  : 'Enter a note or saved message for Sora to remember...'
-              }
-              rows={3}
-              className="w-full bg-[#0a0d1a] border border-white/[0.08] focus:border-indigo-500/50 rounded-xl px-3 py-2.5 text-sm text-slate-200 placeholder-slate-600 outline-none resize-none transition-colors font-mono"
-            />
-
-            <button
-              disabled={!memoryInput.trim()}
-              onClick={async () => {
-                if (!memoryInput.trim()) return;
-                await saveMemory({
-                  type: memorySaveType,
-                  title: memoryInput.trim().slice(0, 55).replace(/\n/g, ' '),
-                  content: memoryInput.trim(),
-                  tags: [memorySaveType],
-                  source: 'manual',
-                  pinned: false,
-                });
-                setMemoryInput('');
-                loadMemories();
-              }}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600/80 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold transition-all shadow-md shadow-indigo-900/40"
-            >
-              <BookmarkAddIcon sx={{ fontSize: 16 }} />
-              Save to Memory
-            </button>
-          </div>
-
-          {/* Memory list */}
-          {memories.length === 0 ? (
-            <div className="text-center py-8">
-              <PsychologyAltIcon sx={{ fontSize: 32 }} className="text-slate-700 mb-2" />
-              <p className="text-sm text-slate-500">No memories saved yet.</p>
-              <p className="text-xs text-slate-600 mt-1">Sora will auto-learn from your instructions, or you can add them manually above.</p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-widest">Saved Memories ({memories.length})</p>
-              {memories.map((mem) => {
-                const typeColors: Record<string, string> = {
-                  instruction: 'bg-blue-500/15 text-blue-300 border-blue-500/25',
-                  code: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/25',
-                  fact: 'bg-amber-500/15 text-amber-300 border-amber-500/25',
-                  message: 'bg-purple-500/15 text-purple-300 border-purple-500/25',
-                };
-                return (
-                  <div
-                    key={mem.id}
-                    className={`p-3 rounded-xl border bg-white/[0.02] border-white/[0.06] hover:border-indigo-500/25 transition-all group ${mem.pinned ? 'border-indigo-500/30 bg-indigo-900/10' : ''}`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border capitalize ${typeColors[mem.type] || typeColors.instruction}`}>
-                            {mem.type}
-                          </span>
-                          {mem.pinned && (
-                            <span className="text-[10px] text-indigo-400 font-semibold">📌 Pinned</span>
-                          )}
-                        </div>
-                        <p className="text-xs font-medium text-slate-200 line-clamp-1">{mem.title}</p>
-                        <p className="text-[11px] text-slate-400 line-clamp-2 mt-0.5 font-mono leading-relaxed">
-                          {mem.content.replace(/```[a-z]*/g, '').trim()}
-                        </p>
-                      </div>
-                      <button
-                        onClick={async () => {
-                          await deleteMemory(mem.id);
-                          loadMemories();
-                        }}
-                        className="opacity-0 group-hover:opacity-100 p-1 rounded-lg hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 transition-all flex-shrink-0"
-                      >
-                        <BookmarkRemoveIcon sx={{ fontSize: 14 }} />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Cross-chat recall info box */}
-          {lastRecalled && (lastRecalled.memories?.length > 0 || lastRecalled.excerpts?.length > 0) && (
-            <div className="p-3.5 rounded-xl bg-indigo-950/50 border border-indigo-500/25 space-y-2">
-              <p className="text-xs font-semibold text-indigo-300">💡 Last Recall (used in recent response)</p>
-              {lastRecalled.memories && lastRecalled.memories.length > 0 && (
-                <p className="text-[11px] text-slate-400">
-                  Injected <strong className="text-indigo-300">{lastRecalled.memories.length}</strong> memorized rule(s)
-                </p>
-              )}
-              {lastRecalled.excerpts && lastRecalled.excerpts.length > 0 && (
-                <p className="text-[11px] text-slate-400">
-                  Recalled <strong className="text-cyan-300">{lastRecalled.excerpts.length}</strong> previous conversation(s):&nbsp;
-                  {lastRecalled.excerpts.map((e) => `"${e.chatTitle}"`).join(', ')}
-                </p>
-              )}
-            </div>
-          )}
-        </div>
-      </Dialog>
-
       {/* AI Gateway Settings Dialog */}
       <Dialog
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        onClose={() => onSettingsOpenChange(false)}
         maxWidth="sm"
         fullWidth
         slotProps={{
@@ -2278,6 +2108,218 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
                 <span>{settingsSaveMsg.text}</span>
               </div>
             )}
+
+            {/* Conversation retention */}
+            <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4 space-y-3">
+              <div>
+                <h4 className="text-xs font-semibold text-white">Chat history</h4>
+                <p className="text-[11px] text-slate-500 mt-1">Manage saved conversations independently from long-term memories.</p>
+              </div>
+              <label className="flex items-center justify-between gap-4 cursor-pointer">
+                <span className="text-xs text-slate-300">Automatically delete old chats</span>
+                <input
+                  type="checkbox"
+                  checked={autoDeleteChats}
+                  onChange={(e) => setAutoDeleteChats(e.target.checked)}
+                  className="h-4 w-4 accent-cyan-500"
+                />
+              </label>
+              <div className="flex items-center justify-between gap-4">
+                <label htmlFor="sora-chat-retention" className="text-xs text-slate-400">Keep chats for</label>
+                <select
+                  id="sora-chat-retention"
+                  value={chatRetentionDays}
+                  disabled={!autoDeleteChats}
+                  onChange={(e) => setChatRetentionDays(Number(e.target.value))}
+                  className="bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs text-white disabled:opacity-40"
+                >
+                  <option value={7}>7 days</option>
+                  <option value={30}>30 days</option>
+                  <option value={90}>90 days</option>
+                  <option value={180}>180 days</option>
+                  <option value={365}>1 year</option>
+                </select>
+              </div>
+              <p className="text-[10px] text-slate-500">Retention is applied when Sora loads saved chat history. Saved memories are not deleted by this option.</p>
+              {historyActionMsg && (
+                <p className={`text-xs ${historyActionMsg.error ? 'text-rose-300' : 'text-emerald-300'}`}>{historyActionMsg.text}</p>
+              )}
+              <button
+                type="button"
+                disabled={historyDeleting}
+                onClick={async () => {
+                  if (!window.confirm('Delete all saved chat history? This cannot be undone. Long-term memories and workspace files will remain.')) return;
+                  setHistoryDeleting(true);
+                  setHistoryActionMsg(null);
+                  try {
+                    if (isStreaming) handleStop();
+                    const result = await deleteAllChatHistory();
+                    if (!result.ok) throw new Error(result.error || 'Could not delete chat history.');
+                    activeChatIdRef.current = null;
+                    setActiveChatId(null);
+                    setMessages([]);
+                    setChatHistory([]);
+                    setSearchQuery('');
+                    setPinnedIds([]);
+                    try { localStorage.removeItem('sora_pinned_chats'); } catch {}
+                    setHistoryActionMsg({ text: `Deleted ${result.deletedCount ?? 0} saved chat(s).` });
+                    await loadHistory();
+                  } catch (err: any) {
+                    setHistoryActionMsg({ text: err?.message || 'Could not delete chat history.', error: true });
+                  } finally {
+                    setHistoryDeleting(false);
+                  }
+                }}
+                className="px-3 py-2 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/15 text-rose-300 disabled:opacity-50 text-xs font-semibold transition-colors"
+              >
+                {historyDeleting ? 'Deleting history…' : 'Delete all chat history'}
+              </button>
+            </div>
+
+            {/* Memory management now lives inside Settings */}
+            <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] overflow-hidden">
+              <div className="px-4 py-3 border-b border-white/[0.08]">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h4 className="text-xs font-semibold text-white">Memory & personalization</h4>
+                    <p className="text-[11px] text-slate-500 mt-1">Manage what Sora retains across conversations.</p>
+                  </div>
+                  <span className="text-[10px] rounded-full border border-white/10 px-2 py-1 text-slate-400">{memories.length} saved</span>
+                </div>
+              </div>
+                      <div className="p-4 space-y-5">
+
+          {/* Quick-add a new memory */}
+          <div className="space-y-2.5">
+            <p className="text-xs font-semibold text-indigo-300 uppercase tracking-widest">Add New Memory</p>
+
+            {/* Type selector */}
+            <div className="flex gap-1.5 flex-wrap">
+              {(['instruction', 'code', 'fact', 'message'] as MemoryItem['type'][]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setMemorySaveType(t)}
+                  className={\\`px-2.5 py-1 rounded-lg text-[11px] font-semibold capitalize transition-all border ${
+                    memorySaveType === t
+                      ? 'bg-indigo-600/50 border-indigo-400/60 text-indigo-100'
+                      : 'bg-white/[0.04] border-white/[0.07] text-slate-400 hover:text-white hover:border-white/20'
+                  }\\`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+
+            <textarea
+              value={memoryInput}
+              onChange={(e) => setMemoryInput(e.target.value)}
+              placeholder={
+                memorySaveType === 'instruction'
+                  ? 'e.g. Always explain code with comments. Never use inline styles.'
+                  : memorySaveType === 'code'
+                  ? 'e.g. \\`\\`\\`python\ndef calculate_pnl(entry, exit): return exit - entry\n\\`\\`\\`'
+                  : memorySaveType === 'fact'
+                  ? 'e.g. My trading account uses MetaTrader 5 with USD base currency.'
+                  : 'Enter a note or saved message for Sora to remember...'
+              }
+              rows={3}
+              className="w-full bg-[#0a0d1a] border border-white/[0.08] focus:border-indigo-500/50 rounded-xl px-3 py-2.5 text-sm text-slate-200 placeholder-slate-600 outline-none resize-none transition-colors font-mono"
+            />
+
+            <button
+              disabled={!memoryInput.trim()}
+              onClick={async () => {
+                if (!memoryInput.trim()) return;
+                await saveMemory({
+                  type: memorySaveType,
+                  title: memoryInput.trim().slice(0, 55).replace(/\n/g, ' '),
+                  content: memoryInput.trim(),
+                  tags: [memorySaveType],
+                  source: 'manual',
+                  pinned: false,
+                });
+                setMemoryInput('');
+                loadMemories();
+              }}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600/80 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold transition-all shadow-md shadow-indigo-900/40"
+            >
+              <BookmarkAddIcon sx={{ fontSize: 16 }} />
+              Save to Memory
+            </button>
+          </div>
+
+          {/* Memory list */}
+          {memories.length === 0 ? (
+            <div className="text-center py-8">
+              <PsychologyAltIcon sx={{ fontSize: 32 }} className="text-slate-700 mb-2" />
+              <p className="text-sm text-slate-500">No memories saved yet.</p>
+              <p className="text-xs text-slate-600 mt-1">Sora will auto-learn from your instructions, or you can add them manually above.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-widest">Saved Memories ({memories.length})</p>
+              {memories.map((mem) => {
+                const typeColors: Record<string, string> = {
+                  instruction: 'bg-blue-500/15 text-blue-300 border-blue-500/25',
+                  code: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/25',
+                  fact: 'bg-amber-500/15 text-amber-300 border-amber-500/25',
+                  message: 'bg-purple-500/15 text-purple-300 border-purple-500/25',
+                };
+                return (
+                  <div
+                    key={mem.id}
+                    className={\\`p-3 rounded-xl border bg-white/[0.02] border-white/[0.06] hover:border-indigo-500/25 transition-all group ${mem.pinned ? 'border-indigo-500/30 bg-indigo-900/10' : ''}\\`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className={\\`px-1.5 py-0.5 rounded text-[10px] font-semibold border capitalize ${typeColors[mem.type] || typeColors.instruction}\\`}>
+                            {mem.type}
+                          </span>
+                          {mem.pinned && (
+                            <span className="text-[10px] text-indigo-400 font-semibold">📌 Pinned</span>
+                          )}
+                        </div>
+                        <p className="text-xs font-medium text-slate-200 line-clamp-1">{mem.title}</p>
+                        <p className="text-[11px] text-slate-400 line-clamp-2 mt-0.5 font-mono leading-relaxed">
+                          {mem.content.replace(/\\`\\`\\`[a-z]*/g, '').trim()}
+                        </p>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          await deleteMemory(mem.id);
+                          loadMemories();
+                        }}
+                        className="opacity-0 group-hover:opacity-100 p-1 rounded-lg hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 transition-all flex-shrink-0"
+                      >
+                        <BookmarkRemoveIcon sx={{ fontSize: 14 }} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Cross-chat recall info box */}
+          {lastRecalled && (lastRecalled.memories?.length > 0 || lastRecalled.excerpts?.length > 0) && (
+            <div className="p-3.5 rounded-xl bg-indigo-950/50 border border-indigo-500/25 space-y-2">
+              <p className="text-xs font-semibold text-indigo-300">💡 Last Recall (used in recent response)</p>
+              {lastRecalled.memories && lastRecalled.memories.length > 0 && (
+                <p className="text-[11px] text-slate-400">
+                  Injected <strong className="text-indigo-300">{lastRecalled.memories.length}</strong> memorized rule(s)
+                </p>
+              )}
+              {lastRecalled.excerpts && lastRecalled.excerpts.length > 0 && (
+                <p className="text-[11px] text-slate-400">
+                  Recalled <strong className="text-cyan-300">{lastRecalled.excerpts.length}</strong> previous conversation(s):&nbsp;
+                  {lastRecalled.excerpts.map((e) => \\`"${e.chatTitle}"\\`).join(', ')}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+            </div>
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.08]">
