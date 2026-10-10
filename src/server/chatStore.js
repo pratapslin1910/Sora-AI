@@ -237,6 +237,27 @@ export async function saveChat(chat, { baseUrl = 'http://127.0.0.1:31415/v1', ap
 }
 
 /**
+ * Delete saved chats older than the configured retention window.
+ * Uses updated_at so recently active conversations are retained.
+ */
+export async function deleteChatsOlderThan(days, { baseUrl, apiKey } = {}) {
+  const retentionDays = Number(days);
+  if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
+  const table = await getTable(baseUrl, apiKey);
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const rows = await table.query().limit(100000).toArray();
+  let deleted = 0;
+  for (const row of rows) {
+    const timestamp = Date.parse(row.updated_at || row.created_at || '');
+    if (Number.isFinite(timestamp) && timestamp < cutoff) {
+      await table.delete(`id = '${String(row.id).replace(/'/g, "''")}'`);
+      deleted += 1;
+    }
+  }
+  return deleted;
+}
+
+/**
  * Delete every saved chat. This intentionally clears persisted conversation
  * history only; it does not touch long-term memories or workspace files.
  */
