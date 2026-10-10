@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -40,8 +40,8 @@ import CloseIcon from '@mui/icons-material/Close';
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
+import SettingsIcon from '@mui/icons-material/Settings';
 import {
-  ChatMessage,
   GatewayHealth,
   ChatSession,
   WebSearchResult,
@@ -58,6 +58,8 @@ import {
   listMemories,
   saveMemory,
   deleteMemory,
+  getSettings,
+  saveSettings,
 } from './services/chatService';
 
 export interface AttachedFileInfo {
@@ -66,13 +68,17 @@ export interface AttachedFileInfo {
   size: number;
   content: string;
   type: string;
+  dataUrl?: string;
+  isImage?: boolean;
 }
 
-interface MessageWithThinking extends ChatMessage {
+interface MessageWithThinking {
+  role: 'user' | 'assistant' | 'system';
+  content: string | import('./services/chatService').MessageContentPart[];
   thinkingLog?: string[];
   thoughtDuration?: number;
   isThinkingOpen?: boolean;
-  attachedFiles?: Array<{ name: string; size: number }>;
+  attachedFiles?: Array<{ name: string; size: number; dataUrl?: string; isImage?: boolean }>;
   webSources?: WebSearchResult[];
   isWebSourcesOpen?: boolean;
 }
@@ -259,8 +265,17 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
       const file = files[i];
       try {
         let textContent = '';
-        if (file.type.startsWith('image/')) {
+        let dataUrl: string | undefined = undefined;
+        const isImage = file.type.startsWith('image/');
+
+        if (isImage) {
           textContent = `[Attached Image: ${file.name} (${formatFileSize(file.size)})]`;
+          dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
         } else {
           // Read up to 256KB text content
           textContent = await file.text();
@@ -275,6 +290,8 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
           size: file.size,
           content: textContent,
           type: file.type || 'text/plain',
+          dataUrl,
+          isImage,
         });
       } catch (err) {
         console.error('File read error:', err);
@@ -283,6 +300,37 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
 
     setAttachedFiles((prev) => [...prev, ...newAttachments]);
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleInputPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        const file = items[i].getAsFile();
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const dataUrl = reader.result as string;
+            setAttachedFiles((prev) => [
+              ...prev,
+              {
+                id: `file_${Date.now()}_paste`,
+                name: `screenshot_${Date.now()}.png`,
+                size: file.size,
+                content: `[Attached Image: screenshot_${Date.now()}.png (${formatFileSize(file.size)})]`,
+                type: file.type || 'image/png',
+                dataUrl,
+                isImage: true,
+              },
+            ]);
+          };
+          reader.readAsDataURL(file);
+          e.preventDefault();
+          break;
+        }
+      }
+    }
   };
 
   const removeAttachedFile = (id: string) => {
@@ -330,10 +378,10 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
   const speechRecognitionRef = useRef<any>(null);
   const isListeningRef = useRef(false);
 
-  // Live thinking state
+  // Live reasoning state — populated by actual actions, never fabricated
   const [thinkingTimer, setThinkingTimer] = useState(0);
   const thinkingIntervalRef = useRef<any>(null);
-  const [currentThinkingPhase, setCurrentThinkingPhase] = useState<string>('Analyzing query context...');
+  const [currentThinkingPhase, setCurrentThinkingPhase] = useState<string>('Analyzing your request...');
 
   // Copied message state
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
@@ -430,6 +478,131 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
       clearInterval(interval);
     };
   }, []);
+
+  // ── AI Gateway Settings (Personalized endpoint & API Key) ────────────────
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsBaseUrl, setSettingsBaseUrl] = useState('');
+  const [settingsApiKey, setSettingsApiKey] = useState('');
+  const [settingsModel, setSettingsModel] = useState('');
+  const [settingsApiKeySet, setSettingsApiKeySet] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsSaveMsg, setSettingsSaveMsg] = useState<{ text: string; error?: boolean } | null>(null);
+
+  const loadSettingsData = useCallback(async () => {
+    try {
+      const s = await getSettings();
+      setSettingsBaseUrl(s.baseUrl || '');
+      setSettingsApiKey(s.apiKeyMasked || '');
+      setSettingsApiKeySet(Boolean(s.apiKeySet));
+      setSettingsModel(s.model || '');
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSettingsData();
+  }, [loadSettingsData]);
+
+  const handleSaveSettings = async () => {
+    setSettingsSaving(true);
+    setSettingsSaveMsg(null);
+    try {
+      const ok = await saveSettings({
+        baseUrl: settingsBaseUrl.trim(),
+        apiKey: settingsApiKey.trim(),
+        model: settingsModel.trim(),
+      });
+      if (ok) {
+        setSettingsSaveMsg({ text: 'Settings saved! Gateway reconnected.' });
+        await refreshHealth();
+        await loadSettingsData();
+        setTimeout(() => {
+          setSettingsSaveMsg(null);
+        }, 3000);
+      } else {
+        setSettingsSaveMsg({ text: 'Failed to save settings.', error: true });
+      }
+    } catch (err: any) {
+      setSettingsSaveMsg({ text: err?.message || 'Error saving settings.', error: true });
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
+  // ── Personalized KPI suggestion cards derived from user's chat history ──
+  const personalizedCards = useMemo(() => {
+    const FALLBACK = [
+      { label: 'Get Started', text: 'What can you help me with?' },
+      { label: 'Code Help', text: 'Help me write a clean function in Python or TypeScript' },
+      { label: 'Explain', text: 'Explain how async/await works under the hood' },
+      { label: 'System Design', text: 'How do I architect a scalable real-time application?' },
+    ];
+    if (!chatHistory || chatHistory.length === 0) return FALLBACK;
+
+    const userQuestions: string[] = [];
+    for (const session of chatHistory) {
+      if (session.messages && Array.isArray(session.messages)) {
+        for (const m of session.messages) {
+          if (m.role === 'user') {
+            const text = typeof m.content === 'string'
+              ? m.content.trim()
+              : Array.isArray(m.content)
+                ? (m.content as any[]).filter((p) => p?.type === 'text').map((p) => p.text).join(' ').trim()
+                : '';
+            if (text && text.length >= 6 && text.length <= 150) {
+              userQuestions.push(text);
+            }
+          }
+        }
+      } else if (session.title && session.title !== 'New Chat' && session.title.length >= 6) {
+        userQuestions.push(session.title);
+      }
+    }
+
+    if (userQuestions.length === 0) return FALLBACK;
+
+    // Track frequency of normalized queries to prioritize repeated questions
+    const counts: Record<string, { count: number; sample: string }> = {};
+    for (const q of userQuestions) {
+      const key = q.toLowerCase().replace(/[^a-z0-9 ]/g, '').slice(0, 40).trim();
+      if (!key) continue;
+      if (!counts[key]) {
+        counts[key] = { count: 1, sample: q };
+      } else {
+        counts[key].count += 1;
+      }
+    }
+
+    const sorted = Object.values(counts).sort((a, b) => b.count - a.count);
+
+    const result = sorted.slice(0, 4).map((item) => {
+      const lower = item.sample.toLowerCase();
+      let label = item.count > 1 ? 'Frequent' : 'Recent';
+      if (/code|python|react|typescript|javascript|func|bug|error|test|api/i.test(lower)) {
+        label = item.count > 1 ? 'Frequent Code' : 'Coding';
+      } else if (/explain|how|why|what is|architecture|design/i.test(lower)) {
+        label = item.count > 1 ? 'Frequent Topic' : 'Deep Dive';
+      } else if (/data|analyze|summary|review|model/i.test(lower)) {
+        label = 'Analysis';
+      }
+      return {
+        label,
+        text: item.sample,
+      };
+    });
+
+    if (result.length < 4) {
+      for (const fb of FALLBACK) {
+        if (result.length >= 4) break;
+        if (!result.some((r) => r.text === fb.text)) {
+          result.push(fb);
+        }
+      }
+    }
+
+    return result.slice(0, 4);
+  }, [chatHistory]);
 
   // Initialize Web Speech API for hands-free audio input
   useEffect(() => {
@@ -547,10 +720,28 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
         : `Please inspect and analyze the attached file(s):\n\n${attachmentsBlock}`;
     }
 
-    const currentAttachments = attachedFiles.map((f) => ({ name: f.name, size: f.size }));
+    const currentAttachments = attachedFiles.map((f) => ({
+      name: f.name,
+      size: f.size,
+      dataUrl: f.dataUrl,
+      isImage: f.isImage,
+    }));
+    const imageFiles = attachedFiles.filter((f) => f.isImage && f.dataUrl);
+
+    let userMessageContent: string | import('./services/chatService').MessageContentPart[] = promptContent;
+    if (imageFiles.length > 0) {
+      userMessageContent = [
+        { type: 'text', text: promptContent || 'Please inspect and analyze this image:' },
+        ...imageFiles.map((f) => ({
+          type: 'image_url' as const,
+          image_url: { url: f.dataUrl! },
+        })),
+      ];
+    }
+
     const userMsg: MessageWithThinking = {
       role: 'user',
-      content: promptContent,
+      content: userMessageContent,
       attachedFiles: currentAttachments.length ? currentAttachments : undefined,
     };
     const newHistory = [...messages, userMsg];
@@ -561,56 +752,61 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
     setIsStreaming(true);
     setThinkingTimer(0);
 
-    // Initial thinking steps
-    const defaultThinkingSteps = [
-      webSearchEnabled
-        ? `Connecting to real-time search engine for "${trimmedInput.slice(0, 40)}"...`
-        : 'Deconstructing trading query & financial instrument intent...',
-      'Retrieving algorithmic market rules & risk parameters...',
-      'Synthesizing real-time analytical response...',
-    ];
+    // Genuine AI introspective thoughts — first-person, based on what Sora actually understands
+    const reasoningSteps: string[] = [];
 
-    setCurrentThinkingPhase(defaultThinkingSteps[0]);
+    // Generate a genuine first-person AI thought about what the user wants
+    const hasImages = imageFiles.length > 0;
+    const hasAttachments = currentAttachments.length > 0 && !hasImages;
+    const inputLower = trimmedInput.toLowerCase();
+    const topic = trimmedInput.slice(0, 60) + (trimmedInput.length > 60 ? '…' : '');
 
-    // Live thinking elapsed timer
+    let primaryThought = '';
+
+    if (hasImages) {
+      primaryThought = imageFiles.length > 1
+        ? `The user wants me to analyze ${imageFiles.length} images — I'll examine each carefully and describe what I see`
+        : `The user wants me to look at this image and understand its content — I'll apply vision reasoning`;
+    } else if (hasAttachments) {
+      primaryThought = currentAttachments.length > 1
+        ? `The user has shared ${currentAttachments.length} files — I need to read through them and respond based on their content`
+        : `The user wants me to work with this file — I'll read it carefully before responding`;
+    } else if (webSearchEnabled) {
+      primaryThought = `The user wants me to search the web for current information about "${topic}" — I should find and synthesize the most relevant sources`;
+    } else if (inputLower.includes('workspace') || inputLower.includes('project') || inputLower.includes('codebase') || inputLower.includes('directory') || inputLower.includes('folder')) {
+      primaryThought = `The user wants me to analyse this workspace — I'll look at the project structure and files to give an informed answer`;
+    } else if (inputLower.includes('fix') || inputLower.includes('debug') || inputLower.includes('error') || inputLower.includes('bug') || inputLower.includes('broken')) {
+      primaryThought = `The user wants me to find and fix a problem — I'll think through what might be causing this and how to resolve it`;
+    } else if (inputLower.includes('create') || inputLower.includes('build') || inputLower.includes('make') || inputLower.includes('generate')) {
+      primaryThought = `The user wants me to create something — I'll think about the best approach and build it step by step`;
+    } else if (inputLower.includes('write') || inputLower.includes('draft') || inputLower.includes('compose')) {
+      primaryThought = `The user wants me to write something — I'll focus on clarity, tone, and making it genuinely useful`;
+    } else if (inputLower.includes('explain') || inputLower.includes('what is') || inputLower.includes('how does') || inputLower.includes('what are') || inputLower.includes('why')) {
+      primaryThought = `The user wants me to explain something — I'll break this down clearly without oversimplifying`;
+    } else if (inputLower.includes('summarize') || inputLower.includes('summary') || inputLower.includes('tldr') || inputLower.includes('brief')) {
+      primaryThought = `The user wants a concise summary — I'll extract the key points and present them clearly`;
+    } else if (inputLower.includes('refactor') || inputLower.includes('improve') || inputLower.includes('optimize') || inputLower.includes('clean')) {
+      primaryThought = `The user wants me to improve existing code or content — I'll review it carefully and suggest meaningful changes`;
+    } else if (inputLower.includes('test') || inputLower.includes('check') || inputLower.includes('verify') || inputLower.includes('validate')) {
+      primaryThought = `The user wants me to test or verify something — I'll think through what needs checking and how to approach it`;
+    } else if (inputLower.includes('list') || inputLower.includes('show me') || inputLower.includes('give me') || inputLower.includes('what') ) {
+      primaryThought = `The user wants information or a list — I'll put together a thorough, well-organised response`;
+    } else if (inputLower.includes('help') || inputLower.includes('how to') || inputLower.includes('how do i') || inputLower.includes('how can')) {
+      primaryThought = `The user needs my help with something — I'll think through the best way to guide them`;
+    } else if (trimmedInput.endsWith('?')) {
+      primaryThought = `The user is asking me a question — I'll think through the answer carefully before responding`;
+    } else {
+      primaryThought = `The user wants me to respond to this — I'm reading it carefully to understand exactly what they need`;
+    }
+
+    reasoningSteps.push(primaryThought);
+    setCurrentThinkingPhase(primaryThought);
+
+    // Live elapsed timer — only tracks time, no fake phase cycling
     const startTime = Date.now();
     thinkingIntervalRef.current = setInterval(() => {
       const elapsed = Math.round((Date.now() - startTime) / 100) / 10;
       setThinkingTimer(elapsed);
-
-      if (elapsed > 0.8 && elapsed < 2.0) {
-        setCurrentThinkingPhase(defaultThinkingSteps[1]);
-        setMessages((prev) => {
-          const updated = [...prev];
-          const lastIdx = updated.length - 1;
-          if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
-            const logs = updated[lastIdx].thinkingLog || [];
-            if (!logs.includes(defaultThinkingSteps[1])) {
-              updated[lastIdx] = {
-                ...updated[lastIdx],
-                thinkingLog: [...logs, defaultThinkingSteps[1]],
-              };
-            }
-          }
-          return updated;
-        });
-      } else if (elapsed >= 2.0) {
-        setCurrentThinkingPhase(defaultThinkingSteps[2]);
-        setMessages((prev) => {
-          const updated = [...prev];
-          const lastIdx = updated.length - 1;
-          if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
-            const logs = updated[lastIdx].thinkingLog || [];
-            if (!logs.includes(defaultThinkingSteps[2])) {
-              updated[lastIdx] = {
-                ...updated[lastIdx],
-                thinkingLog: [...logs, defaultThinkingSteps[2]],
-              };
-            }
-          }
-          return updated;
-        });
-      }
     }, 100);
 
     // 1. Detect explicit URLs in user prompt (e.g., "read https://...", "summarize https://...")
@@ -653,20 +849,24 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
     const sitesReadCount = foundWebSources.filter((s) => s.readSuccess && s.content).length;
     const totalWordsRead = foundWebSources.reduce((acc, s) => acc + (s.wordCount || 0), 0);
 
-    const initialThinkingSteps = [];
+    // Record web search outcome as genuine AI thought
     if (foundWebSources.length > 0) {
-      initialThinkingSteps.push(`Discovered ${foundWebSources.length} real-time web sources for "${trimmedInput.slice(0, 35)}"`);
-      if (sitesReadCount > 0) {
-        initialThinkingSteps.push(`Deeply read & extracted ${sitesReadCount} websites (${totalWordsRead.toLocaleString()} words analyzed)`);
-      }
-    } else {
-      initialThinkingSteps.push(defaultThinkingSteps[0]);
+      reasoningSteps.push(
+        sitesReadCount > 0
+          ? `I found ${foundWebSources.length} relevant source${foundWebSources.length > 1 ? 's' : ''} — I've read through ${sitesReadCount > 1 ? `${sitesReadCount} of them` : 'it'} (${totalWordsRead.toLocaleString()} words) and I'll synthesize the key information`
+          : `I found ${foundWebSources.length} source${foundWebSources.length > 1 ? 's' : ''} — I'll use these to inform my answer`
+      );
+    } else if (webSearchEnabled) {
+      reasoningSteps.push(`I searched the web but didn't find strong sources — I'll rely on my own knowledge to answer`);
     }
+
+    // Update live phase: Sora is now composing its answer
+    setCurrentThinkingPhase(`I have what I need — composing my response now…`);
 
     const assistantPlaceholder: MessageWithThinking = {
       role: 'assistant',
       content: '',
-      thinkingLog: initialThinkingSteps,
+      thinkingLog: [...reasoningSteps],
       thoughtDuration: 0,
       isThinkingOpen: true,
       webSources: foundWebSources.length ? foundWebSources : undefined,
@@ -688,10 +888,18 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
         .join('\n\n---\n\n');
 
       const lastIdx = messagesToSend.length - 1;
-      messagesToSend[lastIdx] = {
-        role: 'user',
-        content: `${messagesToSend[lastIdx].content}\n\n[REAL-TIME LIVE WEB INTELLIGENCE & DEEP SITE CONTENT]:\n${sourcesContext}\n\n(Instruction: Synthesize the deeply read website facts and data above to give an accurate, detailed, and comprehensive answer, quoting specific details from the sources and citing source URLs.)`,
-      };
+      const targetContent = messagesToSend[lastIdx].content;
+      if (typeof targetContent === 'string') {
+        messagesToSend[lastIdx] = {
+          role: 'user',
+          content: `${targetContent}\n\n[REAL-TIME LIVE WEB INTELLIGENCE & DEEP SITE CONTENT]:\n${sourcesContext}\n\n(Instruction: Synthesize the deeply read website facts and data above to give an accurate, detailed, and comprehensive answer, quoting specific details from the sources and citing source URLs.)`,
+        };
+      } else if (Array.isArray(targetContent)) {
+        const textPart = targetContent.find((p) => p && p.type === 'text') as { type: 'text'; text: string } | undefined;
+        if (textPart) {
+          textPart.text = `${textPart.text}\n\n[REAL-TIME LIVE WEB INTELLIGENCE & DEEP SITE CONTENT]:\n${sourcesContext}\n\n(Instruction: Synthesize the deeply read website facts and data above to give an accurate, detailed, and comprehensive answer, quoting specific details from the sources and citing source URLs.)`;
+        }
+      }
     }
 
     const abortController = new AbortController();
@@ -706,6 +914,31 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
         currentChatId: activeChatIdRef.current,
         onRecall: (recalled) => {
           setLastRecalled(recalled);
+          const totalRecalled = (recalled?.memories?.length || 0) + (recalled?.excerpts?.length || 0);
+          if (totalRecalled > 0) {
+            // Genuinely surface what was recalled as an AI thought
+            setMessages((prev) => {
+              const updated = [...prev];
+              const lastIdx = updated.length - 1;
+              if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+                const logs = updated[lastIdx].thinkingLog || [];
+                const memCount = recalled?.memories?.length || 0;
+                const excerptCount = recalled?.excerpts?.length || 0;
+                let recallThought = '';
+                if (memCount > 0 && excerptCount > 0) {
+                  recallThought = `I remember things about this from our past conversations — I'll factor those in`;
+                } else if (memCount > 0) {
+                  recallThought = `I have ${memCount} saved memory${memCount > 1 ? ' entries' : ''} relevant to this — I'll use that context`;
+                } else {
+                  recallThought = `I found ${excerptCount} relevant excerpt${excerptCount > 1 ? 's' : ''} from past conversations — this helps me stay consistent`;
+                }
+                if (!logs.includes(recallThought)) {
+                  updated[lastIdx] = { ...updated[lastIdx], thinkingLog: [...logs, recallThought] };
+                }
+              }
+              return updated;
+            });
+          }
         },
         onMemorySaved: () => {
           // Silently refresh memory list when new memories are auto-saved
@@ -870,14 +1103,19 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
   };
 
   // Helper to extract <think> blocks if produced by reasoning models
-  const parseThinkingContent = (content: string) => {
-    const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/);
+  const parseThinkingContent = (content: any) => {
+    const rawStr = typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+      ? content.filter((p: any) => p?.type === 'text').map((p: any) => p.text || '').join('\n')
+      : String(content || '');
+    const thinkMatch = rawStr.match(/<think>([\s\S]*?)<\/think>/);
     if (thinkMatch) {
       const extractedThought = thinkMatch[1].trim();
-      const cleanContent = content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+      const cleanContent = rawStr.replace(/<think>[\s\S]*?<\/think>/, '').trim();
       return { extractedThought, cleanContent };
     }
-    return { extractedThought: null, cleanContent: content };
+    return { extractedThought: null, cleanContent: rawStr };
   };
 
   return (
@@ -1058,18 +1296,31 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
           })()}
         </div>
 
-        {/* Memory Bank quick-add button PINNED CLEANLY AT THE BOTTOM */}
+        {/* Memory Bank & Settings quick buttons PINNED CLEANLY AT THE BOTTOM */}
         <div className="p-2.5 border-t border-[#222222] bg-[#0c0c0c] shrink-0 space-y-2">
-          <button
-            onClick={() => setMemoryPanelOpen(true)}
-            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-[#141414] hover:bg-[#1a1a1a] border border-[#27272a] hover:border-[#383838] transition-all group"
-          >
-            <PsychologyAltIcon sx={{ fontSize: 16 }} className="text-[#A1A1AA] group-hover:text-white flex-shrink-0" />
-            <span className="text-xs text-[#D4D4D8] flex-1 text-left font-medium group-hover:text-white">Memory Bank</span>
-            {memories.length > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full bg-[#222222] text-[10px] font-bold text-[#E4E4E7] border border-[#333333]">{memories.length}</span>
-            )}
-          </button>
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              onClick={() => setMemoryPanelOpen(true)}
+              className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#141414] hover:bg-[#1a1a1a] border border-[#27272a] hover:border-[#383838] transition-all group"
+            >
+              <PsychologyAltIcon sx={{ fontSize: 15 }} className="text-[#A1A1AA] group-hover:text-white flex-shrink-0" />
+              <span className="text-xs text-[#D4D4D8] font-medium group-hover:text-white">Memory</span>
+              {memories.length > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full bg-[#222222] text-[10px] font-bold text-[#E4E4E7] border border-[#333333]">{memories.length}</span>
+              )}
+            </button>
+
+            <button
+              onClick={() => {
+                loadSettingsData();
+                setSettingsOpen(true);
+              }}
+              className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#141414] hover:bg-[#1a1a1a] border border-[#27272a] hover:border-[#383838] transition-all group"
+            >
+              <SettingsIcon sx={{ fontSize: 15 }} className="text-[#A1A1AA] group-hover:text-white flex-shrink-0" />
+              <span className="text-xs text-[#D4D4D8] font-medium group-hover:text-white">Settings</span>
+            </button>
+          </div>
 
           <div className="flex items-center justify-between px-1 text-[10px] font-mono-terminal text-[#71717A]">
             <div className="flex items-center gap-1.5">
@@ -1090,7 +1341,6 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
           <Container maxWidth="md" disableGutters>
             {messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center min-h-[58vh] text-center px-4 animate-fade-in my-auto">
-                {/* Glowing emblem */}
                 {/* Ambient Neutral Center Icon */}
                 <div className="relative mb-6 mt-8">
                   <div className="w-14 h-14 rounded-2xl bg-[#141414] border border-[#262626] shadow-lg flex items-center justify-center">
@@ -1099,20 +1349,17 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
                 </div>
 
                 <h2 className="text-2xl font-bold text-white tracking-tight mb-2">
-                  How can Sora assist your trading today?
+                  {chatHistory.length > 0 ? "What can I help you with today?" : "How can Sora assist you today?"}
                 </h2>
                 <p className="text-sm text-[#A1A1AA] max-w-md leading-relaxed mb-8">
-                  Algorithmic trading insights, real-time market rule analysis, and autonomous strategy formulation.
+                  {chatHistory.length > 0
+                    ? "Pick up from your frequent topics or ask anything new across coding, reasoning, and research."
+                    : "Ask anything — software engineering, system architecture, data analysis, or deep reasoning."}
                 </p>
 
-                {/* Quick prompt suggestion cards */}
+                {/* Quick prompt suggestion cards personalized to user interest */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-lg text-left">
-                  {[
-                    { label: 'Market Analysis', text: 'Analyze BTC/USD current trend and key support levels' },
-                    { label: 'MT5 Strategy', text: 'Explain an effective RSI and MACD algorithmic setup' },
-                    { label: 'Risk Control', text: 'What are the top 3 risk management rules for day traders?' },
-                    { label: 'About Sora', text: 'Tell me about you in just 1 line' },
-                  ].map((item, idx) => (
+                  {personalizedCards.map((item, idx) => (
                     <button
                       key={idx}
                       onClick={() => {
@@ -1135,7 +1382,14 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
                 const isAssistant = msg.role === 'assistant';
                 const { extractedThought, cleanContent } = isAssistant
                   ? parseThinkingContent(msg.content)
-                  : { extractedThought: null, cleanContent: msg.content };
+                  : {
+                      extractedThought: null,
+                      cleanContent: typeof msg.content === 'string'
+                        ? msg.content
+                        : Array.isArray(msg.content)
+                        ? (msg.content as any[]).filter((p) => p?.type === 'text').map((p) => p.text || '').join('\n')
+                        : '',
+                    };
 
               const hasThinkingContent =
                 isAssistant &&
@@ -1201,8 +1455,8 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
                             <PsychologyIcon sx={{ fontSize: 16 }} className="text-blue-400" />
                             <span className="font-medium text-slate-300 hover:text-blue-300 text-[13px]">
                               {isStreaming && i === messages.length - 1
-                                ? `Thinking (${thinkingTimer}s)...`
-                                : `Thought for ${msg.thoughtDuration || 1}s`}
+                                ? `Reasoning (${thinkingTimer}s)…`
+                                : `Reasoned for ${msg.thoughtDuration || 1}s`}
                             </span>
                             <span className="text-[11px] text-slate-500">
                               {msg.isThinkingOpen !== false ? '• hide details' : '• view details'}
@@ -1226,11 +1480,11 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
                                 ))
                               ) : null}
 
-                              {/* Live active step while streaming */}
+                              {/* Live current action step while streaming — reflects actual operation in progress */}
                               {isStreaming && i === messages.length - 1 && (
                                 <div className="flex items-center gap-2 text-blue-400 animate-pulse pt-0.5">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
-                                  <span>{currentThinkingPhase}</span>
+                                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
+                                  <span className="text-blue-300">{currentThinkingPhase}</span>
                                 </div>
                               )}
 
@@ -1350,6 +1604,22 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
                         </div>
                       )}
 
+                      {/* Attached images preview inside user message bubble */}
+                      {msg.role === 'user' && msg.attachedFiles && msg.attachedFiles.some((f) => f.dataUrl && f.isImage) && (
+                        <div className="self-end flex flex-wrap gap-2 mb-1.5">
+                          {msg.attachedFiles
+                            .filter((f) => f.dataUrl && f.isImage)
+                            .map((f, fIdx) => (
+                              <img
+                                key={fIdx}
+                                src={f.dataUrl}
+                                alt={f.name}
+                                className="max-w-[280px] max-h-56 rounded-xl border border-white/20 object-cover shadow-lg"
+                              />
+                            ))}
+                        </div>
+                      )}
+
                       {/* Main Message Content */}
                       {(cleanContent || (isStreaming && i === messages.length - 1)) && (
                         msg.role === 'user' ? (
@@ -1449,13 +1719,21 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
                     key={f.id}
                     className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-blue-950/50 border border-blue-500/30 text-xs text-blue-200 shadow-sm"
                   >
-                    <InsertDriveFileOutlinedIcon sx={{ fontSize: 15, color: '#60a5fa' }} />
+                    {f.isImage && f.dataUrl ? (
+                      <img
+                        src={f.dataUrl}
+                        alt={f.name}
+                        className="w-5 h-5 rounded object-cover border border-blue-400/40"
+                      />
+                    ) : (
+                      <InsertDriveFileOutlinedIcon sx={{ fontSize: 15, color: '#60a5fa' }} />
+                    )}
                     <span className="font-semibold truncate max-w-[180px]">{f.name}</span>
                     <span className="text-[10px] text-blue-300/60 font-mono">({formatFileSize(f.size)})</span>
                     <button
                       type="button"
                       onClick={() => removeAttachedFile(f.id)}
-                      className="ml-1 p-0.5 rounded-full hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                      className="ml-1 p-0.5 rounded-full hover:bg-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
                     >
                       <CloseIcon sx={{ fontSize: 13 }} />
                     </button>
@@ -1482,7 +1760,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
               }`}
             >
               {/* Attachment Button */}
-              <Tooltip title="Attach data file (CSV, MT5 logs, JSON, code, text, image)" arrow>
+              <Tooltip title="Attach file or image (code, data, text, documents, images)" arrow>
                 <IconButton
                   size="medium"
                   onClick={() => fileInputRef.current?.click()}
@@ -1497,33 +1775,31 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
                 </IconButton>
               </Tooltip>
 
-              {/* Live Web Search Toggle Button */}
+              {/* Live Web Search Toggle Button - Icon only */}
               <Tooltip
                 title={
                   webSearchEnabled
                     ? 'Web Search is ON — Sora will fetch live real-time web results before answering'
-                    : 'Web Search is OFF — Click to enable live web search & real-time market data'
+                    : 'Web Search is OFF — Click to enable live web search & real-time information'
                 }
                 arrow
               >
                 <button
                   type="button"
                   onClick={() => setWebSearchEnabled((prev) => !prev)}
-                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 select-none ml-1 ${
+                  aria-label="Toggle Live Web Search"
+                  className={`flex items-center justify-center p-2 rounded-lg text-xs font-semibold transition-all duration-200 select-none ml-1 cursor-pointer ${
                     webSearchEnabled
                       ? 'bg-[#222222] text-[#FFFFFF] border border-[#444444]'
                       : 'bg-[#141414] text-[#71717A] hover:text-[#D4D4D8] hover:bg-[#1c1c1c] border border-[#222222]'
                   }`}
                 >
                   <TravelExploreIcon
-                    sx={{ fontSize: 16 }}
+                    sx={{ fontSize: 17 }}
                     className={webSearchEnabled ? 'text-[#FFFFFF]' : 'text-[#71717A]'}
                   />
-                  <span className="text-[11px] font-mono tracking-tight hidden sm:inline">
-                    {webSearchEnabled ? 'Search ON' : 'Web Search'}
-                  </span>
                   {webSearchEnabled && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#00D99A] live-blink" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#00D99A] live-blink ml-1.5" />
                   )}
                 </button>
               </Tooltip>
@@ -1531,10 +1807,11 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
               {/* Natural Input Field (User can type while speaking) */}
               <input
                 className="flex-1 bg-transparent border-none outline-none text-white px-3 py-3 text-sm placeholder-slate-400 font-sans"
+                onPaste={handleInputPaste}
                 placeholder={
                   isListening
                     ? 'Listening... Speak or type your message freely...'
-                    : 'Ask Sora about MT5 data, market analysis, or trading strategies...'
+                    : 'Ask Sora anything, paste code, or type a request...'
                 }
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -1898,6 +2175,127 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
               )}
             </div>
           )}
+        </div>
+      </Dialog>
+
+      {/* AI Gateway Settings Dialog */}
+      <Dialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        slotProps={{
+          paper: {
+            sx: {
+              backgroundColor: '#0d0d12',
+              border: '1px solid rgba(255,255,255,0.1)',
+              borderRadius: '16px',
+              color: '#f8fafc',
+            },
+          },
+        }}
+      >
+        <div className="p-6 space-y-5">
+          <div className="flex items-center justify-between pb-3 border-b border-white/[0.08]">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-cyan-500/15 flex items-center justify-center border border-cyan-500/25">
+                <SettingsIcon sx={{ fontSize: 18 }} className="text-cyan-400" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-white">AI Gateway Settings</h3>
+                <p className="text-xs text-slate-400">Configure your personal LLM gateway, endpoint & credentials</p>
+              </div>
+            </div>
+            <IconButton onClick={() => setSettingsOpen(false)} size="small" sx={{ color: '#94a3b8' }}>
+              <CloseIcon sx={{ fontSize: 18 }} />
+            </IconButton>
+          </div>
+
+          <div className="space-y-4 text-xs">
+            {/* Base URL */}
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                Gateway Base URL
+              </label>
+              <input
+                type="text"
+                value={settingsBaseUrl}
+                onChange={(e) => setSettingsBaseUrl(e.target.value)}
+                placeholder="http://127.0.0.1:31415 or https://api.openai.com/v1"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-cyan-500/60 font-mono"
+              />
+              <p className="text-[11px] text-slate-500 mt-1">
+                Default: <code className="text-slate-400">http://127.0.0.1:31415</code>. Compatible with any OpenAI-style gateway or remote provider on any system.
+              </p>
+            </div>
+
+            {/* API Key */}
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                API Key
+              </label>
+              <input
+                type="password"
+                value={settingsApiKey}
+                onChange={(e) => setSettingsApiKey(e.target.value)}
+                placeholder={settingsApiKeySet ? "Key configured (enter new key to replace)" : "Enter API key or leave blank for local gateway"}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-cyan-500/60 font-mono"
+              />
+              <p className="text-[11px] text-slate-500 mt-1">
+                {settingsApiKeySet
+                  ? "✓ A custom API key is currently saved. Re-type to replace, or leave untouched."
+                  : "Optional for local free gateways; required when using paid cloud models (OpenAI, DeepSeek, etc.)."}
+              </p>
+            </div>
+
+            {/* Model Name */}
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                Model Name (Optional)
+              </label>
+              <input
+                type="text"
+                value={settingsModel}
+                onChange={(e) => setSettingsModel(e.target.value)}
+                placeholder="e.g. gpt-4o, claude-3-5-sonnet, deepseek-chat, or leave blank"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-cyan-500/60 font-mono"
+              />
+              <p className="text-[11px] text-slate-500 mt-1">
+                Leave blank or set to &apos;auto&apos; to let the gateway automatically select the model.
+              </p>
+            </div>
+
+            {/* Status / Message */}
+            {settingsSaveMsg && (
+              <div
+                className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
+                  settingsSaveMsg.error
+                    ? 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
+                    : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                }`}
+              >
+                <span>{settingsSaveMsg.error ? '⚠️' : '✓'}</span>
+                <span>{settingsSaveMsg.text}</span>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.08]">
+            <button
+              onClick={() => setSettingsOpen(false)}
+              className="px-3.5 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 text-xs font-medium transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSaveSettings}
+              disabled={settingsSaving}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white text-xs font-semibold transition-all shadow-md shadow-cyan-900/30"
+            >
+              {settingsSaving && <CircularProgress size={12} sx={{ color: 'white' }} />}
+              Save & Reconnect
+            </button>
+          </div>
         </div>
       </Dialog>
     </div>

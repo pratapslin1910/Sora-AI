@@ -28,37 +28,93 @@ import {
   recallContextForQuery,
 } from './memoryStore.js';
 
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+/** Path to user-saved gateway settings */
+const SETTINGS_FILE = path.resolve(__dirname, '../../data/sora_settings.json');
+
 let defaultProviderInstance = null;
 let activeWorkspaceRoot = process.cwd();
+
+/** Load persisted user gateway settings (baseUrl, apiKey, model) */
+function loadSettings() {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      const raw = fs.readFileSync(SETTINGS_FILE, 'utf-8');
+      return JSON.parse(raw);
+    }
+  } catch {}
+  return {};
+}
+
+/** Save gateway settings to disk and reset the provider instance so changes apply immediately */
+function saveSettings(settings) {
+  try {
+    const dir = path.dirname(SETTINGS_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('[Settings] Failed to persist settings:', err.message);
+  }
+  // Force provider re-creation on next request
+  defaultProviderInstance = null;
+}
+
+/**
+ * Extract plain text string from content (whether string or array of vision parts).
+ * @param {string|Array<any>} content
+ * @returns {string}
+ */
+export function extractTextFromContent(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((part) => part && (part.type === 'text' || typeof part.text === 'string'))
+      .map((part) => part.text || '')
+      .join('\n');
+  }
+  return '';
+}
 
 /**
  * Resolve a path safely relative to activeWorkspaceRoot.
  * Prevents path traversal attacks (e.g. ../../etc/passwd).
- * If the resolved path escapes the workspace root, throws an error.
+ * Handles subfolders and Windows/POSIX separators smoothly.
  * @param {string} [target]
  * @returns {string}
  */
 function resolveSafePath(target) {
   if (!target) return activeWorkspaceRoot;
-  const resolved = path.isAbsolute(target)
-    ? path.resolve(target)
-    : path.resolve(activeWorkspaceRoot, target);
-  // Security: reject paths that escape the active workspace root.
-  // Allow absolute paths that happen to be within the workspace.
+  let cleanTarget = String(target).trim();
+
+  // If path starts with / or \, on Windows path.isAbsolute('/src') returns true and
+  // resolves to D:\src instead of activeWorkspaceRoot\src!
+  // Unless it starts with a Windows drive letter (e.g. D:) or UNC path, treat as workspace-relative.
+  if (/^[/\\]/.test(cleanTarget) && !/^[a-zA-Z]:[/\\]/.test(cleanTarget) && !cleanTarget.startsWith('\\\\')) {
+    cleanTarget = cleanTarget.replace(/^[/\\]+/, '');
+  }
+
+  const isRealAbsolute = (cleanTarget.startsWith('\\\\') || /^[a-zA-Z]:[/\\]/.test(cleanTarget) || (process.platform !== 'win32' && path.isAbsolute(cleanTarget)));
+  const resolved = isRealAbsolute
+    ? path.resolve(cleanTarget)
+    : path.resolve(activeWorkspaceRoot, cleanTarget);
+
   const relative = path.relative(activeWorkspaceRoot, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    // Outside workspace — still allow explicit absolute paths the user typed
-    // (workspace switcher uses absolute paths). Only block traversal patterns.
-    if (!path.isAbsolute(target)) {
-      throw new Error('Path traversal attempt detected: ' + target);
-    }
+  if (relative.startsWith('..') && !isRealAbsolute) {
+    throw new Error('Path traversal attempt detected outside workspace: ' + target);
   }
   return resolved;
 }
 
 export function getProvider() {
   if (!defaultProviderInstance) {
-    defaultProviderInstance = new FreeLLMAPIProvider();
+    const saved = loadSettings();
+    defaultProviderInstance = new FreeLLMAPIProvider({
+      baseUrl: saved.baseUrl || undefined,
+      apiKey: saved.apiKey || undefined,
+      model: saved.model || undefined,
+    });
   }
   return defaultProviderInstance;
 }
@@ -160,6 +216,44 @@ export async function handleApiRequest(req, res, customProvider) {
     return true;
   }
 
+  // ── GET /api/settings ───────────────────────────────────────────────────
+  if (req.method === 'GET' && pathname === '/api/settings') {
+    const saved = loadSettings();
+    // Never expose the full API key — return masked version
+    const maskedKey = saved.apiKey
+      ? saved.apiKey.slice(0, 8) + '•'.repeat(Math.max(0, saved.apiKey.length - 8))
+      : '';
+    jsonResponse(res, 200, {
+      ok: true,
+      baseUrl: saved.baseUrl || '',
+      apiKeyMasked: maskedKey,
+      apiKeySet: Boolean(saved.apiKey),
+      model: saved.model || '',
+    });
+    return true;
+  }
+
+  // ── POST /api/settings ──────────────────────────────────────────────────
+  if (req.method === 'POST' && pathname === '/api/settings') {
+    let body;
+    try { body = await parseJsonBody(req); } catch (err) {
+      jsonResponse(res, 400, { error: err.message });
+      return true;
+    }
+    const current = loadSettings();
+    const updated = {
+      baseUrl: typeof body.baseUrl === 'string' ? body.baseUrl.trim() : (current.baseUrl || ''),
+      // Only update apiKey if a non-masked value was provided
+      apiKey: (typeof body.apiKey === 'string' && !body.apiKey.includes('•'))
+        ? body.apiKey.trim()
+        : (current.apiKey || ''),
+      model: typeof body.model === 'string' ? body.model.trim() : (current.model || ''),
+    };
+    saveSettings(updated);
+    jsonResponse(res, 200, { ok: true, message: 'Settings saved. Gateway reconfigured.' });
+    return true;
+  }
+
   // ── POST /api/chat ───────────────────────────────────────────────────────
   if (req.method === 'POST' && pathname === '/api/chat') {
     let body;
@@ -184,10 +278,11 @@ export async function handleApiRequest(req, res, customProvider) {
 
     if (recallMemory !== false) {
       const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
-      if (lastUserMsg && lastUserMsg.content) {
+      const queryText = lastUserMsg ? extractTextFromContent(lastUserMsg.content) : '';
+      if (queryText) {
         try {
           recalledData = await recallContextForQuery(
-            lastUserMsg.content,
+            queryText,
             { currentChatId: currentChatId || null, maxMemories: 5, maxChatTurns: 3 },
             { baseUrl: provider.baseUrl, apiKey: provider.apiKey }
           );
@@ -208,7 +303,7 @@ export async function handleApiRequest(req, res, customProvider) {
           }
 
           // Automatic memory extraction
-          const detected = detectAndExtractMemories(lastUserMsg.content);
+          const detected = detectAndExtractMemories(queryText);
           for (const item of detected) {
             const saved = saveMemory({
               ...item,
@@ -649,6 +744,26 @@ export async function handleApiRequest(req, res, customProvider) {
         jsonResponse(res, 404, { ok: false, error: 'File not found: ' + relPath });
         return true;
       }
+      const ext = path.extname(targetFile).toLowerCase();
+      const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.svg'];
+      if (imageExts.includes(ext)) {
+        const mime = ext === '.png' ? 'image/png'
+          : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+          : ext === '.gif' ? 'image/gif'
+          : ext === '.webp' ? 'image/webp'
+          : ext === '.svg' ? 'image/svg+xml'
+          : 'image/x-icon';
+        const buffer = fs.readFileSync(targetFile);
+        const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`;
+        jsonResponse(res, 200, {
+          ok: true,
+          path: relPath.replace(/\\/g, '/'),
+          isImage: true,
+          dataUrl,
+          content: `[Image file: ${path.basename(targetFile)} (${buffer.length} bytes)]`,
+        });
+        return true;
+      }
       const content = fs.readFileSync(targetFile, 'utf8');
       jsonResponse(res, 200, {
         ok: true,
@@ -751,11 +866,31 @@ export async function handleApiRequest(req, res, customProvider) {
     try {
       const body = await parseJsonBody(req);
       const { path: relPath } = body;
-      if (!relPath) {
+      if (typeof relPath !== 'string') {
         jsonResponse(res, 400, { ok: false, error: 'Path is required' });
         return true;
       }
-      const target = resolveSafePath(relPath);
+      const trimmed = relPath.trim();
+      if (!trimmed || trimmed === '.' || trimmed === '/' || trimmed === '\\') {
+        jsonResponse(res, 400, { ok: false, error: 'Cannot delete the active workspace root folder.' });
+        return true;
+      }
+      const target = resolveSafePath(trimmed);
+      // Essential safeguard: Prevent deleting the active workspace root itself
+      if (
+        path.resolve(target) === path.resolve(activeWorkspaceRoot) ||
+        !path.relative(activeWorkspaceRoot, target) ||
+        path.relative(activeWorkspaceRoot, target) === '.'
+      ) {
+        jsonResponse(res, 400, { ok: false, error: 'Cannot delete the active workspace root folder.' });
+        return true;
+      }
+      // Essential safeguard: Protect .git metadata repository folder
+      const relNorm = path.relative(activeWorkspaceRoot, target).replace(/\\/g, '/');
+      if (relNorm === '.git' || relNorm.startsWith('.git/')) {
+        jsonResponse(res, 403, { ok: false, error: 'Cannot delete .git repository directory.' });
+        return true;
+      }
       if (fs.existsSync(target)) {
         fs.rmSync(target, { recursive: true, force: true });
       }
@@ -777,11 +912,30 @@ export async function handleApiRequest(req, res, customProvider) {
       }
       const runCwd = customCwd ? resolveSafePath(customCwd) : activeWorkspaceRoot;
 
+      // Essential safeguard: Block catastrophic disk/root wiping operations
+      const lowerCmd = command.toLowerCase().trim();
+      const dangerousPatterns = [
+        /\bformat\s+[a-z]:/i,
+        /\b(?:rmdir|del)\s+.*\/s.*[c-z]:\\/i,
+        /\brm\s+-rf\s+(?:\/|\/\*|[c-z]:\\)/i,
+        /\bremove-item\s+.*(?:-recurse|-r).*(?:-force|-fo).*(?:[c-z]:\\|\/)/i,
+        /\bdiskpart\b/i,
+      ];
+      for (const pattern of dangerousPatterns) {
+        if (pattern.test(lowerCmd)) {
+          jsonResponse(res, 403, {
+            ok: false,
+            error: 'Command blocked by safeguard: destructive root or disk-wide operation.',
+          });
+          return true;
+        }
+      }
+
       exec(
         command,
         {
           cwd: runCwd,
-          timeout: 45000,
+          timeout: 120000,
           maxBuffer: 10 * 1024 * 1024,
           shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
         },

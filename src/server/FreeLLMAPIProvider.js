@@ -145,8 +145,18 @@ export class FreeLLMAPIProvider {
       if (!msg.role || typeof msg.role !== 'string') {
         throw new Error('Message "role" is required.');
       }
-      if (typeof msg.content !== 'string') {
-        throw new Error('Message "content" must be a string.');
+      if (typeof msg.content !== 'string' && !Array.isArray(msg.content)) {
+        throw new Error('Message "content" must be a string or array of content parts.');
+      }
+      if (Array.isArray(msg.content)) {
+        if (msg.content.length === 0) {
+          throw new Error('Message "content" array must not be empty.');
+        }
+        for (const part of msg.content) {
+          if (!part || typeof part !== 'object' || typeof part.type !== 'string') {
+            throw new Error('Each content part in message must be an object with a "type".');
+          }
+        }
       }
     }
   }

@@ -41,6 +41,7 @@ import {
   renameWorkspaceItem,
   deleteWorkspaceItem,
   executeTerminalCommand,
+  TerminalExecResult,
 } from '../services/chatService';
 
 interface IDEViewProps {
@@ -88,6 +89,10 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
     newName: string;
   }>({ isOpen: false, item: null, newName: '' });
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [unsavedDialog, setUnsavedDialog] = useState<{
+    isOpen: boolean;
+    tab: OpenTab | null;
+  }>({ isOpen: false, tab: null });
 
   // ── Status Toast ─────────────────────────────────────────────────────────
   const [statusMessage, setStatusMessage] = useState<{
@@ -244,9 +249,14 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
     }
   };
 
-  // Close tab
-  const handleCloseTab = (path: string, e?: React.MouseEvent) => {
+  // Close tab with unsaved changes protection
+  const handleCloseTab = (path: string, e?: React.MouseEvent, force = false) => {
     if (e) e.stopPropagation();
+    const tabToClose = tabs.find((t) => t.path === path);
+    if (tabToClose && tabToClose.isDirty && !force) {
+      setUnsavedDialog({ isOpen: true, tab: tabToClose });
+      return;
+    }
     const updated = tabs.filter((t) => t.path !== path);
     setTabs(updated);
     if (activeTabPath === path) {
@@ -349,6 +359,12 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
 
   // Switch workspace directory
   const handleWorkspaceChanged = (newRoot: string) => {
+    if (tabs.some((t) => t.isDirty)) {
+      const confirmDiscard = window.confirm(
+        'You have unsaved changes in open files. Switching workspace will close them. Continue?'
+      );
+      if (!confirmDiscard) return;
+    }
     setWorkspaceRoot(newRoot);
     setCurrentPath('');
     setTabs([]);
@@ -358,8 +374,10 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
   };
 
   // ── Terminal Execution ───────────────────────────────────────────────────
-  const handleRunTerminalCommand = async (cmd: string) => {
-    if (!cmd.trim() || isExecuting) return;
+  const handleRunTerminalCommand = async (cmd: string): Promise<TerminalExecResult> => {
+    if (!cmd.trim() || isExecuting) {
+      return { ok: false, stdout: '', stderr: 'Terminal is busy or command is empty', exitCode: 1 };
+    }
     setIsExecuting(true);
     setTerminalOpen(true);
 
@@ -370,7 +388,8 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
       .padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
 
     try {
-      const res = await executeTerminalCommand(cmd.trim(), currentPath || undefined);
+      // Execute in active workspace root so package.json, tests, and build scripts run in the right directory
+      const res = await executeTerminalCommand(cmd.trim(), workspaceRoot || undefined);
       const newEntry: TerminalEntry = {
         id: `term_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         command: cmd.trim(),
@@ -383,6 +402,7 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
       setTerminalHistory((prev) => [...prev, newEntry]);
       // If filesystem could be modified, refresh explorer
       loadWorkspace(currentPath);
+      return res;
     } catch (err: any) {
       const newEntry: TerminalEntry = {
         id: `term_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -394,6 +414,7 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
         timestamp: timeStr,
       };
       setTerminalHistory((prev) => [...prev, newEntry]);
+      return { ok: false, stdout: '', stderr: err.message || 'Command failed', exitCode: 1, cwd: workspaceRoot };
     } finally {
       setIsExecuting(false);
     }
@@ -422,10 +443,29 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
         e.preventDefault();
         setTerminalOpen((prev) => !prev);
       }
+      // Escape
+      if (e.key === 'Escape') {
+        setQuickOpenModalOpen(false);
+        setSaveAsModalOpen(false);
+        setWorkspaceModalOpen(false);
+        setUnsavedDialog({ isOpen: false, tab: null });
+      }
     };
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (tabs.some((t) => t.isDirty)) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTab, handleSaveCurrentFile]);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [activeTab, handleSaveCurrentFile, tabs]);
 
   // Tab icon helper
   const getTabIcon = (tab: OpenTab) => {
@@ -537,7 +577,7 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
             setRenameDialog({ isOpen: true, item, newName: item.name })
           }
           onNavigateUp={() => {
-            const parts = currentPath.split('/');
+            const parts = currentPath.split(/[/\\]/).filter(Boolean);
             parts.pop();
             loadWorkspace(parts.join('/'));
           }}
@@ -907,6 +947,55 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
                 className="px-4 py-1.5 rounded bg-[#FF384C] hover:bg-[#d62839] text-white text-xs font-mono font-semibold"
               >
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Unsaved Changes Confirmation Modal */}
+      {unsavedDialog.isOpen && unsavedDialog.tab && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-[#1e1e1e] border border-[#333333] rounded-xl max-w-sm w-full p-5 text-[#cccccc] shadow-2xl space-y-4">
+            <div className="flex items-center gap-2 text-sm font-bold font-mono text-[#FF981F]">
+              <AlertCircle className="w-4 h-4" />
+              <span>Unsaved Changes</span>
+            </div>
+            <p className="text-xs font-mono text-[#aaaaaa] leading-relaxed">
+              Do you want to save the changes you made to{' '}
+              <strong className="text-white">{unsavedDialog.tab.name}</strong>? Your changes will be lost if you don't save them.
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => setUnsavedDialog({ isOpen: false, tab: null })}
+                className="px-3 py-1.5 rounded bg-[#252526] hover:bg-[#2d2d2d] text-[#aaaaaa] text-xs font-mono cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const targetTab = unsavedDialog.tab;
+                  setUnsavedDialog({ isOpen: false, tab: null });
+                  if (targetTab) {
+                    handleCloseTab(targetTab.path, undefined, true);
+                  }
+                }}
+                className="px-3 py-1.5 rounded bg-[#333333] hover:bg-[#444444] text-[#FF7080] hover:text-white text-xs font-mono cursor-pointer"
+              >
+                Don't Save
+              </button>
+              <button
+                onClick={async () => {
+                  const targetTab = unsavedDialog.tab;
+                  setUnsavedDialog({ isOpen: false, tab: null });
+                  if (targetTab) {
+                    await writeWorkspaceFile(targetTab.path, targetTab.content);
+                    handleCloseTab(targetTab.path, undefined, true);
+                    showStatus(`Saved and closed ${targetTab.name}`, 'success');
+                  }
+                }}
+                className="px-4 py-1.5 rounded bg-[#007acc] hover:bg-[#0062a3] text-white text-xs font-mono font-semibold cursor-pointer"
+              >
+                Save
               </button>
             </div>
           </div>

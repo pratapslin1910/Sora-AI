@@ -14,6 +14,7 @@ import {
   ChevronDown,
   X,
   Search,
+  Image,
 } from 'lucide-react';
 import { FileItem, OpenTab } from './types';
 
@@ -83,6 +84,9 @@ export const WorkspaceExplorer: React.FC<WorkspaceExplorerProps> = ({
     }
     if (['md', 'txt'].includes(ext)) {
       return <FileText className="w-4 h-4 text-[#00D99A] shrink-0" />;
+    }
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'ico'].includes(ext)) {
+      return <Image className="w-4 h-4 text-[#FF7080] shrink-0" />;
     }
     return <File className="w-4 h-4 text-[#A1A1AA] shrink-0" />;
   };
@@ -252,15 +256,43 @@ export const WorkspaceExplorer: React.FC<WorkspaceExplorerProps> = ({
             </span>
           </div>
 
-          {/* Current Path Breadcrumb / Parent Folder button */}
+          {/* Current Path Breadcrumb Navigation */}
           {currentPath && (
-            <div className="px-3 py-1 bg-[#1a1a1a] border-b border-[#222222] flex items-center justify-between text-[10px] text-[#888888]">
+            <div className="px-3 py-1.5 bg-[#1a1a1a] border-b border-[#222222] flex items-center justify-between text-[10px] text-[#888888] flex-wrap gap-1">
+              <div className="flex items-center gap-1 flex-wrap overflow-hidden">
+                <button
+                  onClick={() => onOpenFile({ name: 'root', path: '', isDirectory: true, size: 0, ext: '' })}
+                  className="hover:text-white text-[#007acc] cursor-pointer"
+                  title="Go to workspace root"
+                >
+                  root
+                </button>
+                {currentPath.split(/[/\\]/).filter(Boolean).map((segment, idx, arr) => {
+                  const subPath = arr.slice(0, idx + 1).join('/');
+                  const isLast = idx === arr.length - 1;
+                  return (
+                    <span key={subPath} className="flex items-center gap-1">
+                      <span className="text-[#555555]">/</span>
+                      {isLast ? (
+                        <span className="text-white font-medium truncate max-w-[90px]">{segment}</span>
+                      ) : (
+                        <button
+                          onClick={() => onOpenFile({ name: segment, path: subPath, isDirectory: true, size: 0, ext: '' })}
+                          className="hover:text-white text-[#aaaaaa] cursor-pointer truncate max-w-[80px]"
+                        >
+                          {segment}
+                        </button>
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
               <button
                 onClick={onNavigateUp}
-                className="hover:text-white underline cursor-pointer truncate max-w-[170px]"
+                className="hover:text-white px-1.5 py-0.5 rounded bg-[#252526] hover:bg-[#333333] text-[9px] text-[#cccccc] cursor-pointer ml-auto"
                 title="Go up one folder"
               >
-                📁 ../{currentPath}
+                Up ⇡
               </button>
             </div>
           )}

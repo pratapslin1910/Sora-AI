@@ -1,0 +1,5 @@
+{
+  "baseUrl": "http://127.0.0.1:31415/v1",
+  "apiKey": "freellmapi-ab2fa7162802ecfe7411833ca74b9897a685d3d6e1c96207",
+  "model": "auto"
+}

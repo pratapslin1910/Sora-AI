@@ -30,10 +30,21 @@ function zeroVector() {
   return new Array(EMBED_DIM).fill(0);
 }
 
+function extractText(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((p) => p && (p.type === 'text' || typeof p.text === 'string'))
+      .map((p) => p.text || '')
+      .join(' ');
+  }
+  return String(content || '');
+}
+
 /** Generate a simple deterministic bag-of-words vector (fallback, no GPU needed) */
 function bowVector(text) {
   const vec = new Array(EMBED_DIM).fill(0);
-  const words = text.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
+  const words = extractText(text).toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
   for (const word of words) {
     let hash = 5381;
     for (let i = 0; i < word.length; i++) {
@@ -182,7 +193,8 @@ export async function saveChat(chat, { baseUrl = 'http://127.0.0.1:31415/v1', ap
 
     // Auto-generate title from first user message
     const firstUser = chat.messages?.find(m => m.role === 'user');
-    const summary = firstUser?.content?.slice(0, 200) || 'Untitled conversation';
+    const firstUserText = extractText(firstUser?.content);
+    const summary = firstUserText.slice(0, 200) || 'Untitled conversation';
     const title = chat.title || autoTitle(summary);
 
     const vector = await getEmbedding(summary, baseUrl, apiKey);
@@ -323,8 +335,8 @@ export async function searchChatExcerpts(
         if (msg.role !== 'user') continue;
 
         const nextMsg = msgs[i + 1]?.role === 'assistant' ? msgs[i + 1] : null;
-        const userContent = (msg.content || '').toLowerCase();
-        const asstContent = (nextMsg?.content || '').toLowerCase();
+        const userContent = extractText(msg.content).toLowerCase();
+        const asstContent = extractText(nextMsg?.content).toLowerCase();
 
         let hits = titleHits * 1.5;
         for (const t of tokens) {

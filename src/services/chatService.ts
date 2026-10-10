@@ -1,6 +1,10 @@
+export type MessageContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
-  content: string;
+  content: string | MessageContentPart[];
 }
 
 export interface GatewayHealth {
@@ -46,6 +50,37 @@ export async function fetchAvailableModels(): Promise<string[]> {
     return [];
   }
 }
+
+export interface GatewaySettings {
+  baseUrl: string;
+  apiKeyMasked: string;
+  apiKeySet: boolean;
+  model: string;
+}
+
+export async function getSettings(): Promise<GatewaySettings> {
+  try {
+    const res = await fetch('/api/settings');
+    if (!res.ok) return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '' };
+    return await res.json();
+  } catch {
+    return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '' };
+  }
+}
+
+export async function saveSettings(settings: { baseUrl?: string; apiKey?: string; model?: string }): Promise<boolean> {
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 
 export interface RecalledContextPayload {
   memories: MemoryItem[];
@@ -508,7 +543,7 @@ export async function listWorkspaceFiles(relPath = ''): Promise<{ ok: boolean; i
   }
 }
 
-export async function readWorkspaceFile(filePath: string): Promise<{ ok: boolean; content: string; path: string; error?: string }> {
+export async function readWorkspaceFile(filePath: string): Promise<{ ok: boolean; content: string; path: string; isImage?: boolean; dataUrl?: string; error?: string }> {
   try {
     const res = await fetch(`/api/ide/read?path=${encodeURIComponent(filePath)}`);
     return await res.json();

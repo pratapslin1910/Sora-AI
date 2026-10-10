@@ -16,7 +16,7 @@ interface IntegratedTerminalProps {
   workspaceRoot: string;
   terminalHistory: TerminalEntry[];
   isExecuting: boolean;
-  onRunCommand: (cmd: string) => Promise<void>;
+  onRunCommand: (cmd: string) => Promise<any>;
   onClear: () => void;
   onClose: () => void;
 }

@@ -125,4 +125,18 @@ test('Memory Store & Cross-Chat Recall Unit Tests', async (t) => {
     // Clean up
     deleteMemory(memRule.id);
   });
+
+  await t.test('default seed memories are generic and not pinned by default for new installs', () => {
+    const list = listMemories();
+    const seed = list.find((m) => m.id === 'seed-instruction-identity');
+    if (seed) {
+      assert.equal(seed.pinned, false, 'Default identity seed memory must not be pinned');
+      assert.equal(seed.content.includes('algorithmic trading'), false, 'Default seed memory should be domain-agnostic');
+    }
+    const codeSeed = list.find((m) => m.id === 'seed-instruction-code-style');
+    if (codeSeed) {
+      assert.equal(codeSeed.pinned, false, 'Default code style seed memory must not be pinned');
+    }
+  });
 });
+

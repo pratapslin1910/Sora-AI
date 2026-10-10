@@ -14,6 +14,8 @@ import {
   ExternalLink,
   Bot,
   Zap,
+  Image as ImageIcon,
+  X,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -23,14 +25,24 @@ import {
   listWorkspaceFiles,
   readWorkspaceFile,
   writeWorkspaceFile,
-  executeTerminalCommand,
+  createWorkspaceItem,
+  renameWorkspaceItem,
+  deleteWorkspaceItem,
   searchWorkspaceFiles,
 } from '../../services/chatService';
 import { OpenTab } from './types';
 
 export interface AgentToolCall {
   id: string;
-  tool: 'list_dir' | 'read_file' | 'write_file' | 'run_command' | 'search_workspace';
+  tool:
+    | 'list_dir'
+    | 'read_file'
+    | 'write_file'
+    | 'create_item'
+    | 'rename_item'
+    | 'delete_item'
+    | 'run_command'
+    | 'search_workspace';
   args: Record<string, any>;
   status: 'running' | 'done' | 'error';
   result?: any;
@@ -50,7 +62,7 @@ interface SoraAICopilotProps {
   activeTab?: OpenTab;
   onOpenFile?: (path: string) => void;
   onApplyCodeToEditor: (code: string) => void;
-  onRunTerminalCommand: (command: string) => Promise<void>;
+  onRunTerminalCommand: (command: string) => Promise<any>;
   onRefreshExplorer: () => void;
   onClose?: () => void;
 }
@@ -71,6 +83,8 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
     },
   ]);
   const [userInput, setUserInput] = useState<string>('');
+  const [attachedImage, setAttachedImage] = useState<{ name: string; dataUrl: string } | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   const [isAgentRunning, setIsAgentRunning] = useState<boolean>(false);
   const [agentPhase, setAgentPhase] = useState<string>('Ready');
   const [expandedToolCalls, setExpandedToolCalls] = useState<Record<string, boolean>>({});
@@ -78,6 +92,39 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
   const abortControllerRef = useRef<AbortController | null>(null);
   const isAgentActiveRef = useRef<boolean>(false);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
+
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setAttachedImage({ name: file.name, dataUrl: reader.result as string });
+    };
+    reader.readAsDataURL(file);
+    if (imageInputRef.current) imageInputRef.current.value = '';
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        const file = items[i].getAsFile();
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = () => {
+            setAttachedImage({
+              name: `screenshot_${Date.now()}.png`,
+              dataUrl: reader.result as string,
+            });
+          };
+          reader.readAsDataURL(file);
+          e.preventDefault();
+          break;
+        }
+      }
+    }
+  };
 
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -156,19 +203,63 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
         return { ok: false, error: res.error || `Failed to write file: ${path}` };
       }
 
+      if (tool === 'create_item') {
+        const path = args.path;
+        const isDir = Boolean(args.isDir);
+        if (!path) return { ok: false, error: 'Path argument is required' };
+        const res = await createWorkspaceItem(path, isDir);
+        if (res.ok) {
+          onRefreshExplorer();
+          return {
+            ok: true,
+            data: { path, isDir, message: `Created ${isDir ? 'directory' : 'file'}: ${path}` },
+          };
+        }
+        return { ok: false, error: res.error || `Failed to create item: ${path}` };
+      }
+
+      if (tool === 'rename_item') {
+        const oldPath = args.oldPath;
+        const newPath = args.newPath;
+        if (!oldPath || !newPath) return { ok: false, error: 'Both oldPath and newPath are required' };
+        const res = await renameWorkspaceItem(oldPath, newPath);
+        if (res.ok) {
+          onRefreshExplorer();
+          return {
+            ok: true,
+            data: { oldPath, newPath, message: `Renamed ${oldPath} to ${newPath}` },
+          };
+        }
+        return { ok: false, error: res.error || `Failed to rename item: ${oldPath}` };
+      }
+
+      if (tool === 'delete_item') {
+        const path = args.path;
+        if (!path) return { ok: false, error: 'Path argument is required' };
+        const res = await deleteWorkspaceItem(path);
+        if (res.ok) {
+          onRefreshExplorer();
+          return {
+            ok: true,
+            data: { path, message: `Deleted ${path}` },
+          };
+        }
+        return { ok: false, error: res.error || `Failed to delete item: ${path}` };
+      }
+
       if (tool === 'run_command') {
         const command = args.command;
         if (!command) return { ok: false, error: 'Command argument is required' };
-        // Mirror in terminal
-        onRunTerminalCommand(command);
-        const res = await executeTerminalCommand(command);
+        // Single execution: onRunTerminalCommand runs in workspaceRoot and mirrors in terminal history
+        const res = await onRunTerminalCommand(command);
         return {
-          ok: true,
+          ok: (res?.exitCode ?? 0) === 0,
           data: {
             command,
-            exitCode: res.exitCode,
-            stdout: res.stdout ? res.stdout.slice(0, 4000) : '',
-            stderr: res.stderr ? res.stderr.slice(0, 2000) : '',
+            exitCode: res?.exitCode ?? 0,
+            stdout: res?.stdout ? res.stdout.slice(0, 4000) : '',
+            stderr: res?.stderr ? res.stderr.slice(0, 2000) : '',
+            cwd: res?.cwd,
           },
         };
       }
@@ -231,37 +322,53 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
       isAgentActiveRef.current = true;
       setAgentPhase('Analyzing goal & planning actions...');
 
+      const currentImage = attachedImage;
+      setAttachedImage(null);
+
+      const userDisplayPrompt = currentImage
+        ? `${taskPrompt || 'Analyze this attached image'}\n[Attached Image: ${currentImage.name}]`
+        : taskPrompt;
+
       const userMsgId = `user_${Date.now()}`;
       const assistantMsgId = `asst_${Date.now()}`;
 
       // Append user message
       const updatedHistory: AgentMessage[] = [
         ...messages,
-        { id: userMsgId, role: 'user', content: taskPrompt },
+        { id: userMsgId, role: 'user', content: userDisplayPrompt },
         { id: assistantMsgId, role: 'assistant', content: '', toolCalls: [] },
       ];
       setMessages(updatedHistory);
 
       const systemPrompt: ChatMessage = {
         role: 'system',
-        content: `You are Sora AI Autonomous Agent, directly embedded in the user's VS Code workspace on Windows.
+        content: `You are Sora AI Autonomous Agent, embedded in the user's workspace on Windows.
 Active Workspace Root: "${workspaceRoot}".
 Active File: "${activeTab ? activeTab.path : 'None'}".
 
-You have direct, real tools to inspect, read, create, edit, and execute in this workspace.
-NEVER pretend, guess, or hallucinate what files exist. Always use tools to verify real files!
+You have FULL WORKSPACE FREEDOM and TERMINAL FREEDOM:
+- You can inspect, read, create, edit, rename, and delete files/folders across all subfolders.
+- You can run terminal commands (npm test, npm install, build scripts, git commands, python, etc.) to debug and build autonomously.
+- Retain safeguards against catastrophic system wipes.
+- NEVER pretend, guess, or hallucinate files. Always use tools to verify real files!
 
 AVAILABLE TOOLS:
 1. list_dir: List files and folders.
-   args: {"path": ""} (path relative to workspace root)
+   args: {"path": ""}
 2. read_file: Read file content.
-   args: {"path": "README.md"}
-3. write_file: Create or update a file.
+   args: {"path": "src/App.tsx"}
+3. write_file: Create or update file content.
    args: {"path": "src/App.tsx", "content": "..."}
-4. run_command: Run a shell command in the integrated PowerShell terminal.
+4. create_item: Create a new file or directory.
+   args: {"path": "src/components/MyDir", "isDir": true}
+5. rename_item: Rename or move a file/directory.
+   args: {"oldPath": "old.ts", "newPath": "new.ts"}
+6. delete_item: Delete a file or directory.
+   args: {"path": "temp.txt"}
+7. run_command: Run a shell command in the integrated PowerShell terminal.
    args: {"command": "npm test"}
-5. search_workspace: Search file names or text.
-   args: {"query": "search query"}
+8. search_workspace: Search file names or text.
+   args: {"query": "search term"}
 
 TOOL CALL PROTOCOL:
 When you need to perform an action, output your reasoning followed by a single tool call formatted exactly like:
@@ -271,9 +378,15 @@ When you need to perform an action, output your reasoning followed by a single t
 
 After you output a <tool_call>, STOP and wait for the system to execute it.
 You will receive the tool result in a <tool_result> block.
-You can then call another tool or give your final comprehensive answer.
-When the task is completely finished, provide your final response with no further <tool_call> blocks.`,
+When completely finished, provide your final answer with no further tool calls.`,
       };
+
+      const userPayloadContent: ChatMessage['content'] = currentImage
+        ? [
+            { type: 'text', text: taskPrompt || 'Please inspect and analyze this image:' },
+            { type: 'image_url', image_url: { url: currentImage.dataUrl } },
+          ]
+        : taskPrompt;
 
       // Internal agent conversation memory for multi-step execution
       const internalChat: ChatMessage[] = [
@@ -281,7 +394,7 @@ When the task is completely finished, provide your final response with no furthe
         ...messages
           .filter((m) => m.id !== 'welcome')
           .map((m) => ({ role: m.role, content: m.content })),
-        { role: 'user', content: taskPrompt },
+        { role: 'user', content: userPayloadContent },
       ];
 
       let stepCount = 0;
@@ -706,10 +819,49 @@ When the task is completely finished, provide your final response with no furthe
 
       {/* ── Prompt Input Form ────────────────────────────────────────────── */}
       <div className="p-2.5 border-t border-[#2d2d2d] bg-[#202020] shrink-0">
+        {/* Attached image preview */}
+        {attachedImage && (
+          <div className="mb-2 flex items-center gap-2 p-1.5 rounded-lg bg-[#141414] border border-[#333333] max-w-fit">
+            <img
+              src={attachedImage.dataUrl}
+              alt="attachment"
+              className="w-10 h-10 object-cover rounded"
+            />
+            <span className="text-[11px] font-mono text-[#cccccc] truncate max-w-[140px]">
+              {attachedImage.name}
+            </span>
+            <button
+              onClick={() => setAttachedImage(null)}
+              className="p-1 text-[#888888] hover:text-[#FF384C] cursor-pointer"
+              title="Remove image"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleImageSelect}
+          className="hidden"
+        />
+
         <div className="relative flex items-center">
+          <button
+            type="button"
+            onClick={() => imageInputRef.current?.click()}
+            disabled={isAgentRunning}
+            className="absolute left-2.5 bottom-2.5 p-1 rounded hover:bg-[#333333] text-[#71717A] hover:text-[#00D5FF] transition-colors cursor-pointer disabled:opacity-30"
+            title="Attach image/screenshot for analysis"
+          >
+            <ImageIcon className="w-4 h-4" />
+          </button>
           <textarea
             value={userInput}
             onChange={(e) => setUserInput(e.target.value)}
+            onPaste={handlePaste}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -720,10 +872,10 @@ When the task is completely finished, provide your final response with no furthe
             placeholder={
               isAgentRunning
                 ? 'Agent is autonomously executing tasks...'
-                : 'Give Sora Agent a task (e.g. what is this directory about?)...'
+                : 'Give Sora Agent a task (or paste/attach an image)...'
             }
             rows={2}
-            className="w-full bg-[#141414] border border-[#333333] focus:border-[#007acc] rounded-lg p-2 pr-9 text-xs font-mono text-white placeholder-[#666666] outline-none resize-none leading-relaxed"
+            className="w-full bg-[#141414] border border-[#333333] focus:border-[#007acc] rounded-lg pl-9 pr-9 p-2 text-xs font-mono text-white placeholder-[#666666] outline-none resize-none leading-relaxed"
           />
           {isAgentRunning ? (
             <button
@@ -736,7 +888,7 @@ When the task is completely finished, provide your final response with no furthe
           ) : (
             <button
               onClick={() => runAgentTask(userInput)}
-              disabled={!userInput.trim()}
+              disabled={!userInput.trim() && !attachedImage}
               className="absolute right-2 bottom-2.5 p-1 rounded-md bg-[#007acc] text-white hover:bg-[#0062a3] transition-colors disabled:opacity-30 cursor-pointer"
               title="Run Agent Task"
             >

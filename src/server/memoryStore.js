@@ -38,7 +38,13 @@ const EMBED_DIM = 384;
 /** Compute simple bag-of-words vector for local similarity calculation */
 function bowVector(text) {
   const vec = new Array(EMBED_DIM).fill(0);
-  const words = (text || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
+  let rawText = text;
+  if (Array.isArray(rawText)) {
+    rawText = rawText.filter((p) => p && (p.type === 'text' || typeof p.text === 'string')).map((p) => p.text || '').join(' ');
+  } else if (typeof rawText !== 'string') {
+    rawText = String(rawText || '');
+  }
+  const words = rawText.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
   for (const word of words) {
     let hash = 5381;
     for (let i = 0; i < word.length; i++) {
@@ -67,10 +73,10 @@ const DEFAULT_MEMORIES = [
     id: 'seed-instruction-identity',
     type: 'instruction',
     title: 'Sora Core Identity',
-    content: 'Sora is an intelligent, elite AI assistant specializing in algorithmic trading, software engineering, architecture, and multi-domain reasoning. Always be clear, proactive, and precise.',
+    content: "Sora is an intelligent, versatile AI assistant. Always be clear, proactive, and precise. Adapt to each user's needs and domain.",
     tags: ['identity', 'core', 'role'],
     source: 'system',
-    pinned: true,
+    pinned: false,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   },
@@ -81,7 +87,7 @@ const DEFAULT_MEMORIES = [
     content: 'When writing code, provide clean, production-ready code with complete syntax, descriptive variable names, and clear error handling. Do not truncate essential code blocks.',
     tags: ['code', 'style', 'engineering'],
     source: 'system',
-    pinned: true,
+    pinned: false,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   },
@@ -97,7 +103,26 @@ export function loadMemoriesFromDisk() {
     const raw = fs.readFileSync(MEMORIES_FILE, 'utf-8');
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      return parsed;
+      let changed = false;
+      const updated = parsed.map((m) => {
+        if (m.id === 'seed-instruction-identity' && (m.pinned || (typeof m.content === 'string' && m.content.includes('algorithmic trading')))) {
+          changed = true;
+          return {
+            ...m,
+            content: "Sora is an intelligent, versatile AI assistant. Always be clear, proactive, and precise. Adapt to each user's needs and domain.",
+            pinned: false,
+          };
+        }
+        if (m.id === 'seed-instruction-code-style' && m.pinned) {
+          changed = true;
+          return { ...m, pinned: false };
+        }
+        return m;
+      });
+      if (changed) {
+        saveMemoriesToDisk(updated);
+      }
+      return updated;
     }
     return [...DEFAULT_MEMORIES];
   } catch (err) {

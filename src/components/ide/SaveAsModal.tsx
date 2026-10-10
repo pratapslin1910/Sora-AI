@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Save, AlertCircle, Check, X, FileText } from 'lucide-react';
 
 interface SaveAsModalProps {
@@ -17,6 +17,13 @@ export const SaveAsModal: React.FC<SaveAsModalProps> = ({
   const [newFilePath, setNewFilePath] = useState<string>(currentPath || 'untitled.txt');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setNewFilePath(currentPath || 'untitled.txt');
+      setErrorMsg(null);
+    }
+  }, [isOpen, currentPath]);
 
   if (!isOpen) return null;
 

@@ -334,4 +334,69 @@ describe('API Router Integration Tests', () => {
     assert.ok(combinedOutput.includes('"token":"Hi"'));
     assert.ok(combinedOutput.includes('"done":true'));
   });
+
+  it('handles GET /api/settings and POST /api/settings securely', async () => {
+    // 1. Post new settings
+    const postReq = {
+      method: 'POST',
+      url: '/api/settings',
+      headers: { 'content-type': 'application/json' },
+      on: (event, handler) => {
+        if (event === 'data') {
+          handler(Buffer.from(JSON.stringify({
+            baseUrl: 'http://custom-host:8080/v1',
+            apiKey: 'sk-test-secret-12345678',
+            model: 'custom-model',
+          })));
+        }
+        if (event === 'end') handler();
+      },
+    };
+
+    let postStatus;
+    let postBody = '';
+    const postRes = {
+      setHeader: () => {},
+      set statusCode(c) { postStatus = c; },
+      get statusCode() { return postStatus; },
+      end: (data) => { postBody = data; },
+    };
+
+    const postHandled = await handleApiRequest(postReq, postRes);
+    assert.equal(postHandled, true);
+    assert.equal(postStatus, 200);
+    const postParsed = JSON.parse(postBody);
+    assert.equal(postParsed.ok, true);
+
+    // 2. Get settings to verify persistence and key masking
+    const getReq = {
+      method: 'GET',
+      url: '/api/settings',
+      headers: {},
+      on: () => {},
+    };
+
+    let getStatus;
+    let getBody = '';
+    const getRes = {
+      setHeader: () => {},
+      set statusCode(c) { getStatus = c; },
+      get statusCode() { return getStatus; },
+      end: (data) => { getBody = data; },
+    };
+
+    const getHandled = await handleApiRequest(getReq, getRes);
+    assert.equal(getHandled, true);
+    assert.equal(getStatus, 200);
+
+    const getParsed = JSON.parse(getBody);
+    assert.equal(getParsed.ok, true);
+    assert.equal(getParsed.baseUrl, 'http://custom-host:8080/v1');
+    assert.equal(getParsed.model, 'custom-model');
+    assert.equal(getParsed.apiKeySet, true);
+    // API key should be masked and not expose the full secret
+    assert.ok(getParsed.apiKeyMasked.includes('••'));
+    assert.equal(getBody.includes('sk-test-secret-12345678'), false, 'Raw API key must never be exposed');
+  });
 });
+
