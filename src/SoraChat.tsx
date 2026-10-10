@@ -525,7 +525,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
         chatRetentionDays,
       });
       if (ok) {
-        setSettingsSaveMsg({ text: 'Settings saved! Gateway reconnected.' });
+        setSettingsSaveMsg({ text: 'Settings saved successfully.' });
         await refreshHealth();
         await loadSettingsData();
         await loadHistory();
@@ -1308,7 +1308,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
           })()}
         </div>
 
-        {/* Memory Bank & Settings quick buttons PINNED CLEANLY AT THE BOTTOM */}
+        {/* Settings shortcut */}
         <div className="p-2.5 border-t border-[#222222] bg-[#0c0c0c] shrink-0 space-y-2">
           <div>
             <button
@@ -2007,7 +2007,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
         )}
       </Dialog>
 
-      {/* AI Gateway Settings Dialog */}
+      {/* Unified Settings Dialog */}
       <Dialog
         open={settingsOpen}
         onClose={() => onSettingsOpenChange(false)}
@@ -2032,8 +2032,8 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                 <SettingsIcon sx={{ fontSize: 18 }} className="text-cyan-400" />
               </div>
               <div>
-                <h3 className="text-base font-semibold text-white">AI Gateway Settings</h3>
-                <p className="text-xs text-slate-400">Configure your personal LLM gateway, endpoint & credentials</p>
+                <h3 className="text-base font-semibold text-white">Settings</h3>
+                <p className="text-xs text-slate-400">Manage your connection, chat history, and saved memory.</p>
               </div>
             </div>
             <IconButton onClick={() => onSettingsOpenChange(false)} size="small" sx={{ color: '#94a3b8' }}>
