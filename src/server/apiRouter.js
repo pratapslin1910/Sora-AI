@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { exec } from 'node:child_process';
 import { FreeLLMAPIProvider } from './FreeLLMAPIProvider.js';
-import { listChats, getChatById, saveChat, deleteChat, searchChats } from './chatStore.js';
+import { listChats, getChatById, saveChat, deleteChat, deleteAllChats, searchChats } from './chatStore.js';
 import { performWebSearch, readSiteContent } from './webSearch.js';
 import {
   listMemories,
@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** Path to user-saved gateway settings */
 const SETTINGS_FILE = path.resolve(__dirname, '../../data/sora_settings.json');
+const DEFAULT_CHAT_RETENTION_DAYS = 0;
 
 let defaultProviderInstance = null;
 let activeWorkspaceRoot = process.cwd();
@@ -229,6 +230,10 @@ export async function handleApiRequest(req, res, customProvider) {
       apiKeyMasked: maskedKey,
       apiKeySet: Boolean(saved.apiKey),
       model: saved.model || '',
+      autoDeleteChats: Boolean(saved.autoDeleteChats),
+      chatRetentionDays: Number.isFinite(Number(saved.chatRetentionDays))
+        ? Math.max(0, Math.min(3650, Number(saved.chatRetentionDays)))
+        : DEFAULT_CHAT_RETENTION_DAYS,
     });
     return true;
   }
@@ -248,6 +253,14 @@ export async function handleApiRequest(req, res, customProvider) {
         ? body.apiKey.trim()
         : (current.apiKey || ''),
       model: typeof body.model === 'string' ? body.model.trim() : (current.model || ''),
+      autoDeleteChats: typeof body.autoDeleteChats === 'boolean'
+        ? body.autoDeleteChats
+        : Boolean(current.autoDeleteChats),
+      chatRetentionDays: Number.isFinite(Number(body.chatRetentionDays))
+        ? Math.max(0, Math.min(3650, Math.floor(Number(body.chatRetentionDays))))
+        : (Number.isFinite(Number(current.chatRetentionDays))
+          ? Math.max(0, Math.min(3650, Math.floor(Number(current.chatRetentionDays))))
+          : DEFAULT_CHAT_RETENTION_DAYS),
     };
     saveSettings(updated);
     jsonResponse(res, 200, { ok: true, message: 'Settings saved. Gateway reconfigured.' });
@@ -447,6 +460,18 @@ export async function handleApiRequest(req, res, customProvider) {
     try {
       const siteData = await readSiteContent(targetUrl.trim());
       jsonResponse(res, 200, { ok: true, data: siteData });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: String(err.message) });
+    }
+    return true;
+  }
+
+  // ── DELETE all saved chat history (must be checked before /api/chats/:id) ──
+  if (req.method === 'DELETE' && pathname === '/api/chats') {
+    try {
+      const opts = { baseUrl: provider.baseUrl, apiKey: provider.apiKey };
+      const deletedCount = await deleteAllChats(opts);
+      jsonResponse(res, 200, { ok: true, deletedCount });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: String(err.message) });
     }
