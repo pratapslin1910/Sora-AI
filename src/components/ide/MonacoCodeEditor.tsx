@@ -178,6 +178,9 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
       <div className="flex-1 w-full h-full overflow-hidden relative">
         <Editor
           height="100%"
+          // Use a stable, extension-preserving model URI so Monaco parses TSX/JSX files
+          // correctly and doesn't carry diagnostics between unrelated file tabs.
+          path={activeTab.path.replace(/\\/g, '/')}
           language={activeTab.language}
           value={activeTab.content}
           theme="vs-dark"

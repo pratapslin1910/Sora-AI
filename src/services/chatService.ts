@@ -56,19 +56,35 @@ export interface GatewaySettings {
   apiKeyMasked: string;
   apiKeySet: boolean;
   model: string;
+  autoDeleteChats: boolean;
+  chatRetentionDays: number;
 }
 
 export async function getSettings(): Promise<GatewaySettings> {
   try {
     const res = await fetch('/api/settings');
-    if (!res.ok) return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '' };
-    return await res.json();
+    if (!res.ok) return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '', autoDeleteChats: false, chatRetentionDays: 30 };
+    const data = await res.json();
+    return {
+      baseUrl: data.baseUrl || '',
+      apiKeyMasked: data.apiKeyMasked || '',
+      apiKeySet: Boolean(data.apiKeySet),
+      model: data.model || '',
+      autoDeleteChats: Boolean(data.autoDeleteChats),
+      chatRetentionDays: Number(data.chatRetentionDays) || 30,
+    };
   } catch {
-    return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '' };
+    return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '', autoDeleteChats: false, chatRetentionDays: 30 };
   }
 }
 
-export async function saveSettings(settings: { baseUrl?: string; apiKey?: string; model?: string }): Promise<boolean> {
+export async function saveSettings(settings: {
+  baseUrl?: string;
+  apiKey?: string;
+  model?: string;
+  autoDeleteChats?: boolean;
+  chatRetentionDays?: number;
+}): Promise<boolean> {
   try {
     const res = await fetch('/api/settings', {
       method: 'POST',
@@ -281,6 +297,17 @@ export async function saveChatSession(session: {
     return data?.chat ?? null;
   } catch {
     return null;
+  }
+}
+
+/** Delete all persisted chat sessions; memories and files are unaffected. */
+export async function deleteAllChatHistory(): Promise<{ ok: boolean; deletedCount?: number; error?: string }> {
+  try {
+    const res = await fetch('/api/chats', { method: 'DELETE' });
+    const data = await res.json();
+    return { ok: res.ok && Boolean(data?.ok), deletedCount: data?.deletedCount, error: data?.error };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Could not delete chat history.' };
   }
 }
 

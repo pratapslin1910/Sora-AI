@@ -52,6 +52,7 @@ import {
   listChatHistory,
   saveChatSession,
   deleteChatSession,
+  deleteAllChatHistory,
   searchChatHistory,
   fetchWebSearch,
   readSiteUrl,
@@ -207,9 +208,11 @@ const MarkdownContent = ({ content }: { content: string }) => {
 export interface SoraChatProps {
   initialPrompt?: string;
   onClearInitialPrompt?: () => void;
+  settingsOpen?: boolean;
+  onSettingsOpenChange?: (open: boolean) => void;
 }
 
-const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) => {
+const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, onSettingsOpenChange = () => {} }: SoraChatProps = {}) => {
   const [messages, setMessages] = useState<MessageWithThinking[]>([]);
   const [input, setInput] = useState('');
 
@@ -232,7 +235,6 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
 
   // ── Memory Bank state ────────────────────────────────────────────────────
   const [memories, setMemories] = useState<MemoryItem[]>([]);
-  const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
   const [memoryInput, setMemoryInput] = useState('');
   const [memorySaveType, setMemorySaveType] = useState<MemoryItem['type']>('instruction');
   const [lastRecalled, setLastRecalled] = useState<RecalledContextPayload | null>(null);
@@ -480,11 +482,14 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
   }, []);
 
   // ── AI Gateway Settings (Personalized endpoint & API Key) ────────────────
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsBaseUrl, setSettingsBaseUrl] = useState('');
   const [settingsApiKey, setSettingsApiKey] = useState('');
   const [settingsModel, setSettingsModel] = useState('');
   const [settingsApiKeySet, setSettingsApiKeySet] = useState(false);
+  const [autoDeleteChats, setAutoDeleteChats] = useState(false);
+  const [chatRetentionDays, setChatRetentionDays] = useState(30);
+  const [historyDeleting, setHistoryDeleting] = useState(false);
+  const [historyActionMsg, setHistoryActionMsg] = useState<{ text: string; error?: boolean } | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaveMsg, setSettingsSaveMsg] = useState<{ text: string; error?: boolean } | null>(null);
 
@@ -495,14 +500,18 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
       setSettingsApiKey(s.apiKeyMasked || '');
       setSettingsApiKeySet(Boolean(s.apiKeySet));
       setSettingsModel(s.model || '');
+      setAutoDeleteChats(Boolean(s.autoDeleteChats));
+      setChatRetentionDays(Math.max(1, Number(s.chatRetentionDays) || 30));
     } catch {
       // ignore
     }
   }, []);
 
   useEffect(() => {
-    loadSettingsData();
-  }, [loadSettingsData]);
+    if (settingsOpen) {
+      void loadSettingsData();
+    }
+  }, [settingsOpen, loadSettingsData]);
 
   const handleSaveSettings = async () => {
     setSettingsSaving(true);
@@ -512,11 +521,14 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
         baseUrl: settingsBaseUrl.trim(),
         apiKey: settingsApiKey.trim(),
         model: settingsModel.trim(),
+        autoDeleteChats,
+        chatRetentionDays,
       });
       if (ok) {
-        setSettingsSaveMsg({ text: 'Settings saved! Gateway reconnected.' });
+        setSettingsSaveMsg({ text: 'Settings saved successfully.' });
         await refreshHealth();
         await loadSettingsData();
+        await loadHistory();
         setTimeout(() => {
           setSettingsSaveMsg(null);
         }, 3000);
@@ -1296,26 +1308,12 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
           })()}
         </div>
 
-        {/* Memory Bank & Settings quick buttons PINNED CLEANLY AT THE BOTTOM */}
+        {/* Settings shortcut */}
         <div className="p-2.5 border-t border-[#222222] bg-[#0c0c0c] shrink-0 space-y-2">
-          <div className="grid grid-cols-2 gap-1.5">
+          <div>
             <button
-              onClick={() => setMemoryPanelOpen(true)}
-              className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#141414] hover:bg-[#1a1a1a] border border-[#27272a] hover:border-[#383838] transition-all group"
-            >
-              <PsychologyAltIcon sx={{ fontSize: 15 }} className="text-[#A1A1AA] group-hover:text-white flex-shrink-0" />
-              <span className="text-xs text-[#D4D4D8] font-medium group-hover:text-white">Memory</span>
-              {memories.length > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full bg-[#222222] text-[10px] font-bold text-[#E4E4E7] border border-[#333333]">{memories.length}</span>
-              )}
-            </button>
-
-            <button
-              onClick={() => {
-                loadSettingsData();
-                setSettingsOpen(true);
-              }}
-              className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#141414] hover:bg-[#1a1a1a] border border-[#27272a] hover:border-[#383838] transition-all group"
+              onClick={() => onSettingsOpenChange(true)}
+              className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#141414] hover:bg-[#1a1a1a] border border-[#27272a] hover:border-[#383838] transition-all group"
             >
               <SettingsIcon sx={{ fontSize: 15 }} className="text-[#A1A1AA] group-hover:text-white flex-shrink-0" />
               <span className="text-xs text-[#D4D4D8] font-medium group-hover:text-white">Settings</span>
@@ -2009,42 +2007,187 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
         )}
       </Dialog>
 
-      {/* ─── Memory Bank Modal Panel ─────────────────────────────────── */}
+      {/* Unified Settings Dialog */}
       <Dialog
-        open={memoryPanelOpen}
-        onClose={() => setMemoryPanelOpen(false)}
-        maxWidth="sm"
+        open={settingsOpen}
+        onClose={() => onSettingsOpenChange(false)}
+        maxWidth="md"
         fullWidth
         slotProps={{
           paper: {
             sx: {
-              background: '#0c0f1a',
-              border: '1px solid rgba(99, 102, 241, 0.25)',
+              maxHeight: '90vh',
+              backgroundColor: '#0d0d12',
+              border: '1px solid rgba(255,255,255,0.1)',
               borderRadius: '16px',
-              color: '#e2e8f0',
-              boxShadow: '0 25px 80px rgba(0,0,0,0.7)',
-              overflow: 'hidden',
+              color: '#f8fafc',
             },
           },
         }}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07] bg-indigo-950/30">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-indigo-600/30 flex items-center justify-center">
-              <PsychologyAltIcon sx={{ fontSize: 18, color: '#818cf8' }} />
+        <div className="p-6 space-y-5 max-h-[85vh] overflow-y-auto custom-scrollbar">
+          <div className="flex items-center justify-between pb-3 border-b border-white/[0.08]">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-cyan-500/15 flex items-center justify-center border border-cyan-500/25">
+                <SettingsIcon sx={{ fontSize: 18 }} className="text-cyan-400" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-white">Settings</h3>
+                <p className="text-xs text-slate-400">Manage your connection, chat history, and saved memory.</p>
+              </div>
             </div>
-            <div>
-              <span className="text-sm font-bold text-white">Memory Bank</span>
-              <p className="text-[10px] text-indigo-300 mt-0">Sora remembers across all chats</p>
-            </div>
+            <IconButton onClick={() => onSettingsOpenChange(false)} size="small" sx={{ color: '#94a3b8' }}>
+              <CloseIcon sx={{ fontSize: 18 }} />
+            </IconButton>
           </div>
-          <IconButton size="small" onClick={() => setMemoryPanelOpen(false)} sx={{ color: '#94a3b8', '&:hover': { color: '#fff' } }}>
-            <CloseIcon sx={{ fontSize: 18 }} />
-          </IconButton>
-        </div>
 
-        <div className="p-5 space-y-5 max-h-[70vh] overflow-y-auto custom-scrollbar">
+          <div className="space-y-4 text-xs">
+            {/* Base URL */}
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                Gateway Base URL
+              </label>
+              <input
+                type="text"
+                value={settingsBaseUrl}
+                onChange={(e) => setSettingsBaseUrl(e.target.value)}
+                placeholder="http://127.0.0.1:31415 or https://api.openai.com/v1"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-cyan-500/60 font-mono"
+              />
+              <p className="text-[11px] text-slate-500 mt-1">
+                Default: <code className="text-slate-400">http://127.0.0.1:31415</code>. Compatible with any OpenAI-style gateway or remote provider on any system.
+              </p>
+            </div>
+
+            {/* API Key */}
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                API Key
+              </label>
+              <input
+                type="password"
+                value={settingsApiKey}
+                onChange={(e) => setSettingsApiKey(e.target.value)}
+                placeholder={settingsApiKeySet ? "Key configured (enter new key to replace)" : "Enter API key or leave blank for local gateway"}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-cyan-500/60 font-mono"
+              />
+              <p className="text-[11px] text-slate-500 mt-1">
+                {settingsApiKeySet
+                  ? "✓ A custom API key is currently saved. Re-type to replace, or leave untouched."
+                  : "Optional for local free gateways; required when using paid cloud models (OpenAI, DeepSeek, etc.)."}
+              </p>
+            </div>
+
+            {/* Model Name */}
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                Model Name (Optional)
+              </label>
+              <input
+                type="text"
+                value={settingsModel}
+                onChange={(e) => setSettingsModel(e.target.value)}
+                placeholder="e.g. gpt-4o, claude-3-5-sonnet, deepseek-chat, or leave blank"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-cyan-500/60 font-mono"
+              />
+              <p className="text-[11px] text-slate-500 mt-1">
+                Leave blank or set to &apos;auto&apos; to let the gateway automatically select the model.
+              </p>
+            </div>
+
+            {/* Status / Message */}
+            {settingsSaveMsg && (
+              <div
+                className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
+                  settingsSaveMsg.error
+                    ? 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
+                    : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                }`}
+              >
+                <span>{settingsSaveMsg.error ? '⚠️' : '✓'}</span>
+                <span>{settingsSaveMsg.text}</span>
+              </div>
+            )}
+
+            {/* Conversation retention */}
+            <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4 space-y-3">
+              <div>
+                <h4 className="text-xs font-semibold text-white">Chat history</h4>
+                <p className="text-[11px] text-slate-500 mt-1">Manage saved conversations independently from long-term memories.</p>
+              </div>
+              <label className="flex items-center justify-between gap-4 cursor-pointer">
+                <span className="text-xs text-slate-300">Automatically delete old chats</span>
+                <input
+                  type="checkbox"
+                  checked={autoDeleteChats}
+                  onChange={(e) => setAutoDeleteChats(e.target.checked)}
+                  className="h-4 w-4 accent-cyan-500"
+                />
+              </label>
+              <div className="flex items-center justify-between gap-4">
+                <label htmlFor="sora-chat-retention" className="text-xs text-slate-400">Keep chats for</label>
+                <select
+                  id="sora-chat-retention"
+                  value={chatRetentionDays}
+                  disabled={!autoDeleteChats}
+                  onChange={(e) => setChatRetentionDays(Number(e.target.value))}
+                  className="bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs text-white disabled:opacity-40"
+                >
+                  <option value={7}>7 days</option>
+                  <option value={30}>30 days</option>
+                  <option value={90}>90 days</option>
+                  <option value={180}>180 days</option>
+                  <option value={365}>1 year</option>
+                </select>
+              </div>
+              <p className="text-[10px] text-slate-500">Retention is applied when Sora loads saved chat history. Saved memories are not deleted by this option.</p>
+              {historyActionMsg && (
+                <p className={`text-xs ${historyActionMsg.error ? 'text-rose-300' : 'text-emerald-300'}`}>{historyActionMsg.text}</p>
+              )}
+              <button
+                type="button"
+                disabled={historyDeleting || isStreaming}
+                onClick={async () => {
+                  if (isStreaming) return;
+                  if (!window.confirm('Delete all saved chat history? This cannot be undone. Long-term memories and workspace files will remain.')) return;
+                  setHistoryDeleting(true);
+                  setHistoryActionMsg(null);
+                  try {
+                    const result = await deleteAllChatHistory();
+                    if (!result.ok) throw new Error(result.error || 'Could not delete chat history.');
+                    activeChatIdRef.current = null;
+                    setActiveChatId(null);
+                    setMessages([]);
+                    setChatHistory([]);
+                    setSearchQuery('');
+                    setPinnedIds([]);
+                    try { localStorage.removeItem('sora_pinned_chats'); } catch {}
+                    setHistoryActionMsg({ text: `Deleted ${result.deletedCount ?? 0} saved chat(s).` });
+                    await loadHistory();
+                  } catch (err: any) {
+                    setHistoryActionMsg({ text: err?.message || 'Could not delete chat history.', error: true });
+                  } finally {
+                    setHistoryDeleting(false);
+                  }
+                }}
+                className="px-3 py-2 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/15 text-rose-300 disabled:opacity-50 text-xs font-semibold transition-colors"
+              >
+                {historyDeleting ? 'Deleting history…' : isStreaming ? 'Stop generation to delete history' : 'Delete all chat history'}
+              </button>
+            </div>
+
+            {/* Memory management now lives inside Settings */}
+            <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] overflow-hidden">
+              <div className="px-4 py-3 border-b border-white/[0.08]">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h4 className="text-xs font-semibold text-white">Memory & personalization</h4>
+                    <p className="text-[11px] text-slate-500 mt-1">Manage what Sora retains across conversations.</p>
+                  </div>
+                  <span className="text-[10px] rounded-full border border-white/10 px-2 py-1 text-slate-400">{memories.length} saved</span>
+                </div>
+              </div>
+                      <div className="p-4 space-y-5">
 
           {/* Quick-add a new memory */}
           <div className="space-y-2.5">
@@ -2176,113 +2319,12 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt }: SoraChatProps = {}) =
             </div>
           )}
         </div>
-      </Dialog>
-
-      {/* AI Gateway Settings Dialog */}
-      <Dialog
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        maxWidth="sm"
-        fullWidth
-        slotProps={{
-          paper: {
-            sx: {
-              backgroundColor: '#0d0d12',
-              border: '1px solid rgba(255,255,255,0.1)',
-              borderRadius: '16px',
-              color: '#f8fafc',
-            },
-          },
-        }}
-      >
-        <div className="p-6 space-y-5">
-          <div className="flex items-center justify-between pb-3 border-b border-white/[0.08]">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-cyan-500/15 flex items-center justify-center border border-cyan-500/25">
-                <SettingsIcon sx={{ fontSize: 18 }} className="text-cyan-400" />
-              </div>
-              <div>
-                <h3 className="text-base font-semibold text-white">AI Gateway Settings</h3>
-                <p className="text-xs text-slate-400">Configure your personal LLM gateway, endpoint & credentials</p>
-              </div>
             </div>
-            <IconButton onClick={() => setSettingsOpen(false)} size="small" sx={{ color: '#94a3b8' }}>
-              <CloseIcon sx={{ fontSize: 18 }} />
-            </IconButton>
-          </div>
-
-          <div className="space-y-4 text-xs">
-            {/* Base URL */}
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                Gateway Base URL
-              </label>
-              <input
-                type="text"
-                value={settingsBaseUrl}
-                onChange={(e) => setSettingsBaseUrl(e.target.value)}
-                placeholder="http://127.0.0.1:31415 or https://api.openai.com/v1"
-                className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-cyan-500/60 font-mono"
-              />
-              <p className="text-[11px] text-slate-500 mt-1">
-                Default: <code className="text-slate-400">http://127.0.0.1:31415</code>. Compatible with any OpenAI-style gateway or remote provider on any system.
-              </p>
-            </div>
-
-            {/* API Key */}
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                API Key
-              </label>
-              <input
-                type="password"
-                value={settingsApiKey}
-                onChange={(e) => setSettingsApiKey(e.target.value)}
-                placeholder={settingsApiKeySet ? "Key configured (enter new key to replace)" : "Enter API key or leave blank for local gateway"}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-cyan-500/60 font-mono"
-              />
-              <p className="text-[11px] text-slate-500 mt-1">
-                {settingsApiKeySet
-                  ? "✓ A custom API key is currently saved. Re-type to replace, or leave untouched."
-                  : "Optional for local free gateways; required when using paid cloud models (OpenAI, DeepSeek, etc.)."}
-              </p>
-            </div>
-
-            {/* Model Name */}
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                Model Name (Optional)
-              </label>
-              <input
-                type="text"
-                value={settingsModel}
-                onChange={(e) => setSettingsModel(e.target.value)}
-                placeholder="e.g. gpt-4o, claude-3-5-sonnet, deepseek-chat, or leave blank"
-                className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-cyan-500/60 font-mono"
-              />
-              <p className="text-[11px] text-slate-500 mt-1">
-                Leave blank or set to &apos;auto&apos; to let the gateway automatically select the model.
-              </p>
-            </div>
-
-            {/* Status / Message */}
-            {settingsSaveMsg && (
-              <div
-                className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
-                  settingsSaveMsg.error
-                    ? 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
-                    : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
-                }`}
-              >
-                <span>{settingsSaveMsg.error ? '⚠️' : '✓'}</span>
-                <span>{settingsSaveMsg.text}</span>
-              </div>
-            )}
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.08]">
             <button
-              onClick={() => setSettingsOpen(false)}
+              onClick={() => onSettingsOpenChange(false)}
               className="px-3.5 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 text-xs font-medium transition-colors"
             >
               Cancel

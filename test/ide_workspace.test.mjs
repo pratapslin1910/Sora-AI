@@ -165,15 +165,15 @@ describe('IDE & Workspace Endpoints Tests', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         path: 'search_sample.ts',
-        content: 'const antigravityAwesomeAgent = 42;\nexport default antigravityAwesomeAgent;',
+        content: 'const soraWorkspaceMarker = 42;\nexport default soraWorkspaceMarker;',
       }),
     });
 
-    const searchRes = await fetch(`${baseUrl}/api/ide/search?q=antigravityAwesomeAgent`);
+    const searchRes = await fetch(`${baseUrl}/api/ide/search?q=soraWorkspaceMarker`);
     assert.equal(searchRes.status, 200);
     const searchData = await searchRes.json();
     assert.equal(searchData.ok, true);
     assert.ok(searchData.matches.length > 0);
-    assert.match(searchData.matches[0].text, /antigravityAwesomeAgent/);
+    assert.match(searchData.matches[0].text, /soraWorkspaceMarker/);
   });
 });

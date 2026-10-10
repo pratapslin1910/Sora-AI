@@ -79,7 +79,7 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
     {
       id: 'welcome',
       role: 'assistant',
-      content: `👋 **Sora AI Autonomous Agent initialized.**\n\nI operate directly on your workspace \`${workspaceRoot}\`. I can autonomously **inspect files, read code, write/create files, search, and execute terminal commands** step-by-step just like Antigravity.`,
+      content: `👋 **Sora AI Copilot is ready.**\n\nActive workspace: \`${workspaceRoot}\`.\nI can inspect and edit project files, search the workspace, run terminal commands, and verify changes. I’ll report only actions and results that I have actually completed.`,
     },
   ]);
   const [userInput, setUserInput] = useState<string>('');
@@ -350,7 +350,14 @@ You have FULL WORKSPACE FREEDOM and TERMINAL FREEDOM:
 - You can inspect, read, create, edit, rename, and delete files/folders across all subfolders.
 - You can run terminal commands (npm test, npm install, build scripts, git commands, python, etc.) to debug and build autonomously.
 - Retain safeguards against catastrophic system wipes.
-- NEVER pretend, guess, or hallucinate files. Always use tools to verify real files!
+- NEVER pretend, guess, or hallucinate files. Always use tools to verify real files.
+- Never mention, compare, or reference other AI assistants, IDE agents, IDE products, or competitors by name. Describe Sora's capabilities directly.
+- Do not claim an action succeeded until the tool has returned a successful result.
+- When reviewing code, never call something a syntax error based only on visual suspicion or an AI guess.
+- Verify the exact file path and extension, read the relevant source, then run the appropriate compiler, parser, linter, or targeted test when available.
+- Report a syntax error only when a real tool reproduces it; include the exact file and line/column from tool output.
+- Separate confirmed compiler errors from warnings, type errors, runtime errors, and unverified concerns. Never invent diagnostics.
+- If verification cannot run, state that clearly and label the finding as unverified.
 
 AVAILABLE TOOLS:
 1. list_dir: List files and folders.
@@ -371,7 +378,7 @@ AVAILABLE TOOLS:
    args: {"query": "search term"}
 
 TOOL CALL PROTOCOL:
-When you need to perform an action, output your reasoning followed by a single tool call formatted exactly like:
+When you need to perform an action, output only one tool call formatted exactly like this. Do not reveal private reasoning or hidden chain-of-thought; concise, user-facing status updates are sufficient:
 <tool_call>
 {"tool": "<tool_name>", "args": { ... }}
 </tool_call>
@@ -615,7 +622,7 @@ When completely finished, provide your final answer with no further tool calls.`
             {agentPhase}
           </span>
         </div>
-        <span className="text-[#555555]">Antigravity Loop</span>
+        <span className="text-[#555555]">Sora Agent Loop</span>
       </div>
 
       {/* ── Messages & Agent Steps Stream ─────────────────────────────────── */}
