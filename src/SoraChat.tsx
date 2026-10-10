@@ -2012,11 +2012,12 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
       <Dialog
         open={settingsOpen}
         onClose={() => onSettingsOpenChange(false)}
-        maxWidth="sm"
+        maxWidth="md"
         fullWidth
         slotProps={{
           paper: {
             sx: {
+              maxHeight: '90vh',
               backgroundColor: '#0d0d12',
               border: '1px solid rgba(255,255,255,0.1)',
               borderRadius: '16px',
@@ -2025,7 +2026,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
           },
         }}
       >
-        <div className="p-6 space-y-5">
+        <div className="p-6 space-y-5 max-h-[85vh] overflow-y-auto custom-scrollbar">
           <div className="flex items-center justify-between pb-3 border-b border-white/[0.08]">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-lg bg-cyan-500/15 flex items-center justify-center border border-cyan-500/25">
@@ -2199,11 +2200,11 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                 <button
                   key={t}
                   onClick={() => setMemorySaveType(t)}
-                  className={\`px-2.5 py-1 rounded-lg text-[11px] font-semibold capitalize transition-all border ${
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold capitalize transition-all border ${
                     memorySaveType === t
                       ? 'bg-indigo-600/50 border-indigo-400/60 text-indigo-100'
                       : 'bg-white/[0.04] border-white/[0.07] text-slate-400 hover:text-white hover:border-white/20'
-                  }\`}
+                  }`}
                 >
                   {t}
                 </button>
@@ -2217,7 +2218,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                 memorySaveType === 'instruction'
                   ? 'e.g. Always explain code with comments. Never use inline styles.'
                   : memorySaveType === 'code'
-                  ? 'e.g. \`\`\`python\ndef calculate_pnl(entry, exit): return exit - entry\n\`\`\`'
+                  ? 'e.g. ```python\ndef calculate_pnl(entry, exit): return exit - entry\n```'
                   : memorySaveType === 'fact'
                   ? 'e.g. My trading account uses MetaTrader 5 with USD base currency.'
                   : 'Enter a note or saved message for Sora to remember...'
@@ -2268,12 +2269,12 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                 return (
                   <div
                     key={mem.id}
-                    className={\`p-3 rounded-xl border bg-white/[0.02] border-white/[0.06] hover:border-indigo-500/25 transition-all group ${mem.pinned ? 'border-indigo-500/30 bg-indigo-900/10' : ''}\`}
+                    className={`p-3 rounded-xl border bg-white/[0.02] border-white/[0.06] hover:border-indigo-500/25 transition-all group ${mem.pinned ? 'border-indigo-500/30 bg-indigo-900/10' : ''}`}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
-                          <span className={\`px-1.5 py-0.5 rounded text-[10px] font-semibold border capitalize ${typeColors[mem.type] || typeColors.instruction}\`}>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border capitalize ${typeColors[mem.type] || typeColors.instruction}`}>
                             {mem.type}
                           </span>
                           {mem.pinned && (
@@ -2282,7 +2283,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                         </div>
                         <p className="text-xs font-medium text-slate-200 line-clamp-1">{mem.title}</p>
                         <p className="text-[11px] text-slate-400 line-clamp-2 mt-0.5 font-mono leading-relaxed">
-                          {mem.content.replace(/\`\`\`[a-z]*/g, '').trim()}
+                          {mem.content.replace(/```[a-z]*/g, '').trim()}
                         </p>
                       </div>
                       <button
@@ -2313,7 +2314,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
               {lastRecalled.excerpts && lastRecalled.excerpts.length > 0 && (
                 <p className="text-[11px] text-slate-400">
                   Recalled <strong className="text-cyan-300">{lastRecalled.excerpts.length}</strong> previous conversation(s):&nbsp;
-                  {lastRecalled.excerpts.map((e) => \`"${e.chatTitle}"\`).join(', ')}
+                  {lastRecalled.excerpts.map((e) => `"${e.chatTitle}"`).join(', ')}
                 </p>
               )}
             </div>
