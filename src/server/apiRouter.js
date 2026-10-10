@@ -33,6 +33,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** Path to user-saved gateway settings */
 const SETTINGS_FILE = path.resolve(__dirname, '../../data/sora_settings.json');
+const DEFAULT_BASE_URL = 'http://127.0.0.1:31415/v1';
+const DEFAULT_MODEL = 'auto';
 const DEFAULT_CHAT_RETENTION_DAYS = 0;
 
 let defaultProviderInstance = null;
@@ -226,10 +228,10 @@ export async function handleApiRequest(req, res, customProvider) {
       : '';
     jsonResponse(res, 200, {
       ok: true,
-      baseUrl: saved.baseUrl || '',
+      baseUrl: saved.baseUrl || DEFAULT_BASE_URL,
       apiKeyMasked: maskedKey,
       apiKeySet: Boolean(saved.apiKey),
-      model: saved.model || '',
+      model: saved.model || DEFAULT_MODEL,
       autoDeleteChats: Boolean(saved.autoDeleteChats),
       chatRetentionDays: Number.isFinite(Number(saved.chatRetentionDays))
         ? Math.max(0, Math.min(3650, Number(saved.chatRetentionDays)))
