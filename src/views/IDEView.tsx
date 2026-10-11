@@ -32,6 +32,7 @@ import { SoraAICopilot } from '../components/ide/SoraAICopilot';
 import { WorkspaceSwitcherModal } from '../components/ide/WorkspaceSwitcherModal';
 import { SaveAsModal } from '../components/ide/SaveAsModal';
 import { QuickOpenModal } from '../components/ide/QuickOpenModal';
+import { readIdeSession, writeIdeSession } from '../utils/ideSessionState.js';
 import {
   getWorkspaceInfo,
   listWorkspaceFiles,
@@ -49,29 +50,33 @@ interface IDEViewProps {
 }
 
 export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
+  // Restore the last workspace UI snapshot synchronously before the first render.
+  const [initialSession] = useState(() => readIdeSession());
+  const [sessionReady, setSessionReady] = useState(false);
+
   // ── Workspace & Files State ──────────────────────────────────────────────
-  const [workspaceRoot, setWorkspaceRoot] = useState<string>('');
-  const [currentPath, setCurrentPath] = useState<string>('');
+  const [workspaceRoot, setWorkspaceRoot] = useState<string>(initialSession?.workspaceRoot || '');
+  const [currentPath, setCurrentPath] = useState<string>(initialSession?.currentPath || '');
   const [files, setFiles] = useState<FileItem[]>([]);
   const [isLoadingFiles, setIsLoadingFiles] = useState<boolean>(false);
 
   // ── Editor Tabs State ────────────────────────────────────────────────────
-  const [tabs, setTabs] = useState<OpenTab[]>([]);
-  const [activeTabPath, setActiveTabPath] = useState<string>('');
+  const [tabs, setTabs] = useState<OpenTab[]>(initialSession?.tabs || []);
+  const [activeTabPath, setActiveTabPath] = useState<string>(initialSession?.activeTabPath || '');
 
   // ── Layout & View State ──────────────────────────────────────────────────
-  const [activeActivityTab, setActiveActivityTab] = useState<ActivityBarTab>('explorer');
-  const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
-  const [copilotOpen, setCopilotOpen] = useState<boolean>(false);
-  const [terminalOpen, setTerminalOpen] = useState<boolean>(true);
+  const [activeActivityTab, setActiveActivityTab] = useState<ActivityBarTab>(initialSession?.activeActivityTab || 'explorer');
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(initialSession?.sidebarOpen ?? true);
+  const [copilotOpen, setCopilotOpen] = useState<boolean>(initialSession?.copilotOpen ?? false);
+  const [terminalOpen, setTerminalOpen] = useState<boolean>(initialSession?.terminalOpen ?? true);
 
   // ── Editor Controls ──────────────────────────────────────────────────────
-  const [cursorPos, setCursorPos] = useState<CursorPosition>({ line: 1, col: 1 });
-  const [wordWrap, setWordWrap] = useState<boolean>(false);
-  const [minimapEnabled, setMinimapEnabled] = useState<boolean>(true);
+  const [cursorPos, setCursorPos] = useState<CursorPosition>(initialSession?.cursorPos || { line: 1, col: 1 });
+  const [wordWrap, setWordWrap] = useState<boolean>(initialSession?.wordWrap ?? false);
+  const [minimapEnabled, setMinimapEnabled] = useState<boolean>(initialSession?.minimapEnabled ?? true);
 
   // ── Terminal State ───────────────────────────────────────────────────────
-  const [terminalHistory, setTerminalHistory] = useState<TerminalEntry[]>([]);
+  const [terminalHistory, setTerminalHistory] = useState<TerminalEntry[]>(initialSession?.terminalHistory || []);
   const [isExecuting, setIsExecuting] = useState<boolean>(false);
 
   // ── Modals State ─────────────────────────────────────────────────────────
@@ -129,16 +134,67 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // No deps: always uses the freshest dirPath argument
 
-  // Initial load — run once on mount only
+  // Restore the previously active workspace before loading its file list.
   useEffect(() => {
-    getWorkspaceInfo().then((info) => {
-      if (info.ok && info.workspaceRoot) {
-        setWorkspaceRoot(info.workspaceRoot);
+    let cancelled = false;
+    const initialize = async () => {
+      try {
+        const info = await getWorkspaceInfo();
+        if (cancelled) return;
+        const savedRoot = initialSession?.workspaceRoot;
+        if (savedRoot && info?.workspaceRoot !== savedRoot) {
+          try {
+            const response = await fetch('/api/ide/workspace', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: savedRoot }),
+            });
+            if (!response.ok) {
+              const data = await response.json().catch(() => ({}));
+              throw new Error(data.error || 'Could not restore the previous workspace.');
+            }
+          } catch (err: any) {
+            showStatus(err?.message || 'Could not restore the previous workspace.', 'error');
+          }
+        } else if (!savedRoot && info?.workspaceRoot) {
+          setWorkspaceRoot(info.workspaceRoot);
+        }
+        if (cancelled) return;
+        await loadWorkspace(initialSession?.currentPath || '');
+        if (!cancelled) setSessionReady(true);
+      } catch (err: any) {
+        if (!cancelled) {
+          showStatus(err?.message || 'Could not initialize the IDE workspace.', 'error');
+          setSessionReady(true);
+        }
       }
-    });
-    loadWorkspace('');
+    };
+    void initialize();
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // loadWorkspace identity is stable (empty deps above)
+  }, []);
+
+  // Persist the IDE session after initial workspace restoration. Storage failures must never crash the IDE.
+  useEffect(() => {
+    if (!sessionReady) return;
+    const timer = window.setTimeout(() => {
+      writeIdeSession({
+        workspaceRoot,
+        currentPath,
+        tabs,
+        activeTabPath,
+        activeActivityTab,
+        sidebarOpen,
+        copilotOpen,
+        terminalOpen,
+        cursorPos,
+        wordWrap,
+        minimapEnabled,
+        terminalHistory,
+      });
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [sessionReady, workspaceRoot, currentPath, tabs, activeTabPath, activeActivityTab, sidebarOpen, copilotOpen, terminalOpen, cursorPos, wordWrap, minimapEnabled, terminalHistory]);
 
   // ── File Operations ──────────────────────────────────────────────────────
 

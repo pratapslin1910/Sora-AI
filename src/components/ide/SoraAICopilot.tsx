@@ -34,6 +34,7 @@ import {
 } from '../../services/chatService';
 import { executeExtensionTool, fetchExtensionTools } from '../../services/extensionService';
 import { parseToolCallFromText, stripToolCallsFromText } from '../../utils/toolParser';
+import { readCopilotSession, writeCopilotSession } from '../../utils/ideSessionState.js';
 import { OpenTab } from './types';
 
 export interface AgentToolCall {
@@ -80,13 +81,14 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
   onRunTerminalCommand,
   onRefreshExplorer,
 }) => {
-  const [messages, setMessages] = useState<AgentMessage[]>([
-    {
+  const [messages, setMessages] = useState<AgentMessage[]>(() => {
+    const restored = readCopilotSession(workspaceRoot);
+    return restored.length > 0 ? restored : [{
       id: 'welcome',
       role: 'assistant',
       content: `👋 **Sora AI Copilot is ready.**\n\nActive workspace: \`${workspaceRoot}\`.\nI can inspect and edit project files, search the workspace, run terminal commands, and verify changes. I’ll report only actions and results that I have actually completed.`,
-    },
-  ]);
+    }];
+  });
   const [userInput, setUserInput] = useState<string>('');
   const [attachedImage, setAttachedImage] = useState<{ name: string; dataUrl: string } | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -135,6 +137,14 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isAgentRunning, agentPhase]);
+
+  // Debounced recovery snapshot preserves the Copilot conversation across IDE reloads.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      writeCopilotSession(workspaceRoot, messages);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [workspaceRoot, messages]);
 
   const toggleToolCallExpand = (id: string) => {
     setExpandedToolCalls((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -338,6 +348,8 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
     async (taskPrompt: string) => {
       if (!taskPrompt.trim() || isAgentRunning) return;
 
+      let taskFailed = false;
+      try {
       setUserInput('');
       setIsAgentRunning(true);
       isAgentActiveRef.current = true;
@@ -457,13 +469,25 @@ When completely finished, provide your final answer with no further tool calls.`
 
         let stepResponseText = '';
 
-        // Stream next step from LLM
+        // A stalled provider stream must not leave the Copilot task pending forever.
         await new Promise<void>((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(streamTimeout);
+            resolve();
+          };
+          const streamTimeout = window.setTimeout(() => {
+            stepResponseText += '\n\n⚠️ The model response timed out after 90 seconds. Please retry the task.';
+            abortController.abort();
+            finish();
+          }, 90000);
+
           streamChatMessage(internalChat, {
             signal: abortController.signal,
             onToken: (token) => {
               stepResponseText += token;
-              // Live update the current assistant message content in the UI
               setMessages((prev) => {
                 const copy = [...prev];
                 const last = copy[copy.length - 1];
@@ -475,10 +499,10 @@ When completely finished, provide your final answer with no further tool calls.`
                 return copy;
               });
             },
-            onDone: () => resolve(),
+            onDone: finish,
             onError: (err) => {
               stepResponseText += `\n\n⚠️ Error: ${err}`;
-              resolve();
+              finish();
             },
           });
         });
@@ -571,10 +595,36 @@ When completely finished, provide your final answer with no further tool calls.`
         }
       }
 
-      setAgentPhase('Ready');
-      setIsAgentRunning(false);
-      isAgentActiveRef.current = false;
-      abortControllerRef.current = null;
+      if (stepCount >= MAX_STEPS && isAgentActiveRef.current) {
+        const limitMessage = 'I stopped this task after 8 agent steps to prevent an unbounded tool loop. Please narrow the request or ask me to continue.';
+        setMessages((prev) => {
+          const copy = [...prev];
+          const last = copy[copy.length - 1];
+          if (last && last.role === 'assistant') {
+            last.content = last.content ? `${last.content}\n\n${limitMessage}` : limitMessage;
+          }
+          return copy;
+        });
+      }
+      } catch (err: any) {
+        taskFailed = true;
+        const message = err?.message || 'Unexpected error while running the Copilot task.';
+        console.error('[Sora Copilot] Task failed:', err);
+        setMessages((prev) => {
+          const copy = [...prev];
+          const last = copy[copy.length - 1];
+          if (last && last.role === 'assistant') {
+            last.content = `Copilot task failed: ${message}`;
+          }
+          return copy;
+        });
+        setAgentPhase('Failed');
+      } finally {
+        setIsAgentRunning(false);
+        isAgentActiveRef.current = false;
+        abortControllerRef.current = null;
+        if (!taskFailed && isAgentActiveRef.current) setAgentPhase('Ready');
+      }
     },
     [
       messages,
