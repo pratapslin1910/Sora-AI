@@ -623,7 +623,7 @@ When completely finished, provide your final answer with no further tool calls.`
         setIsAgentRunning(false);
         isAgentActiveRef.current = false;
         abortControllerRef.current = null;
-        if (!taskFailed) setAgentPhase('Ready');
+        if (!taskFailed && isAgentActiveRef.current) setAgentPhase('Ready');
       }
     },
     [
