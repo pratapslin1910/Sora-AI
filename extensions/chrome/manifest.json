@@ -39,14 +39,14 @@
     },
     {
       "name": "chrome_manage_tabs",
-      "description": "Manage Chrome tabs: open a new tab or list navigation actions. Use this ONLY to open a blank new tab. If the user wants to search for something or navigate to a URL, use chrome_search_and_navigate instead.",
+      "description": "Manage Chrome tabs: supported action is 'open' to open a new blank Chrome tab. 'close' and 'list' are NOT supported without a CDP connection and will return an error. Use chrome_search_and_navigate to navigate to a URL instead.",
       "parameters": {
         "type": "object",
         "properties": {
           "action": {
             "type": "string",
             "enum": ["open", "close", "list"],
-            "description": "Tab action to perform ('open' opens a new blank tab, 'close', 'list')"
+            "description": "Tab action. Only 'open' is fully supported. 'close' and 'list' require Chrome DevTools Protocol (CDP) and will return an unsupported error."
           },
           "url": {
             "type": "string",

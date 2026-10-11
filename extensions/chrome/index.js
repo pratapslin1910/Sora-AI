@@ -127,22 +127,29 @@ export async function chrome_manage_tabs(args, context = {}) {
   }
 
   if (action === 'close') {
-    // Graceful close shortcut simulation or note
+    // Chrome DevTools Protocol is not available here; we cannot close a specific tab
+    // without a CDP connection. Return an explicit unsupported result rather than
+    // reporting false success.
     return {
-      ok: true,
+      ok: false,
+      error: 'chrome_manage_tabs: "close" requires a Chrome DevTools Protocol (CDP) connection which is not available in this extension. Use the Chrome window directly to close a tab (Ctrl+W).',
       data: {
         action: 'close',
-        message: 'Active tab close request dispatched.',
+        supported: false,
+        hint: 'Use Ctrl+W in Chrome, or open chrome_search_and_navigate to navigate away instead.',
       },
     };
   }
 
   if (action === 'list') {
+    // Cannot enumerate open tabs without CDP. Return an explicit unsupported result.
     return {
-      ok: true,
+      ok: false,
+      error: 'chrome_manage_tabs: "list" requires a Chrome DevTools Protocol (CDP) connection which is not available in this extension.',
       data: {
         action: 'list',
-        message: 'Chrome process active.',
+        supported: false,
+        hint: 'Tab listing requires a running CDP session. This capability is not implemented.',
       },
     };
   }

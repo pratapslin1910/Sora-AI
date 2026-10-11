@@ -111,33 +111,129 @@ export function extractTextFromContent(content) {
 }
 
 /**
+ * Determine if an Origin header is a trusted local origin (localhost / 127.0.0.1 / [::1]).
+ * @param {string} [origin]
+ * @returns {boolean}
+ */
+export function isAllowedOrigin(origin) {
+  if (!origin || typeof origin !== 'string') return false;
+  if (origin === 'null') return false;
+  try {
+    const parsed = new URL(origin);
+    const hostname = parsed.hostname.toLowerCase();
+    return (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '[::1]' ||
+      hostname === '::1'
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validate Host header to protect against DNS rebinding.
+ * @param {string} [host]
+ * @returns {boolean}
+ */
+export function isAllowedHost(host) {
+  if (!host || typeof host !== 'string') return true;
+  const cleanHost = host.split(':')[0].toLowerCase();
+  return (
+    cleanHost === 'localhost' ||
+    cleanHost === '127.0.0.1' ||
+    cleanHost === '[::1]' ||
+    cleanHost === '::1'
+  );
+}
+
+export function getActiveWorkspaceRoot() {
+  return activeWorkspaceRoot;
+}
+
+export function setActiveWorkspaceRoot(newRoot) {
+  if (!newRoot || typeof newRoot !== 'string') {
+    throw new Error('Workspace root must be a non-empty string path.');
+  }
+  const clean = newRoot.trim();
+  if (clean.startsWith('\\\\') || clean.startsWith('//') || /^[/\\]{2}/.test(clean)) {
+    throw new Error('Access denied: UNC paths are not permitted as workspace roots.');
+  }
+  if (!fs.existsSync(clean)) {
+    throw new Error('Directory does not exist: ' + clean);
+  }
+  const stat = fs.statSync(clean);
+  if (!stat.isDirectory()) {
+    throw new Error('Specified path is not a directory: ' + clean);
+  }
+  activeWorkspaceRoot = fs.realpathSync(clean);
+  return activeWorkspaceRoot;
+}
+
+/**
  * Resolve a path safely relative to activeWorkspaceRoot.
- * Prevents path traversal attacks (e.g. ../../etc/passwd).
+ * Prevents path traversal attacks (e.g. ../../etc/passwd), absolute drive bypasses,
+ * UNC paths, sibling directory escapes, and symlink escapes.
  * Handles subfolders and Windows/POSIX separators smoothly.
  * @param {string} [target]
+ * @param {string} [root]
  * @returns {string}
  */
-function resolveSafePath(target) {
-  if (!target) return activeWorkspaceRoot;
+export function resolveSafePath(target, root = activeWorkspaceRoot) {
+  const currentRoot = root || activeWorkspaceRoot || process.cwd();
+  const canonicalRoot = fs.existsSync(currentRoot)
+    ? fs.realpathSync(currentRoot)
+    : path.resolve(currentRoot);
+
+  if (!target) return canonicalRoot;
   let cleanTarget = String(target).trim();
 
-  // If path starts with / or \, on Windows path.isAbsolute('/src') returns true and
-  // resolves to D:\src instead of activeWorkspaceRoot\src!
-  // Unless it starts with a Windows drive letter (e.g. D:) or UNC path, treat as workspace-relative.
-  if (/^[/\\]/.test(cleanTarget) && !/^[a-zA-Z]:[/\\]/.test(cleanTarget) && !cleanTarget.startsWith('\\\\')) {
+  // Reject UNC paths (e.g. \\server\share or //server/share)
+  if (cleanTarget.startsWith('\\\\') || cleanTarget.startsWith('//') || /^[/\\]{2}/.test(cleanTarget)) {
+    throw new Error('Access denied: UNC paths are not permitted in workspace operations: ' + target);
+  }
+
+  // If path starts with / or \ without a Windows drive letter, treat as workspace-relative
+  // by stripping leading slashes so it doesn't resolve to the drive root on Windows.
+  if (/^[/\\]/.test(cleanTarget) && !/^[a-zA-Z]:[/\\]/.test(cleanTarget)) {
     cleanTarget = cleanTarget.replace(/^[/\\]+/, '');
   }
 
-  const isRealAbsolute = (cleanTarget.startsWith('\\\\') || /^[a-zA-Z]:[/\\]/.test(cleanTarget) || (process.platform !== 'win32' && path.isAbsolute(cleanTarget)));
-  const resolved = isRealAbsolute
+  const isDriveAbsolute = /^[a-zA-Z]:[/\\]/.test(cleanTarget) || (process.platform !== 'win32' && path.isAbsolute(cleanTarget));
+  const resolved = isDriveAbsolute
     ? path.resolve(cleanTarget)
-    : path.resolve(activeWorkspaceRoot, cleanTarget);
+    : path.resolve(canonicalRoot, cleanTarget);
 
-  const relative = path.relative(activeWorkspaceRoot, resolved);
-  if (relative.startsWith('..') && !isRealAbsolute) {
+  const rel = path.relative(canonicalRoot, resolved);
+  // Traversal checks: starts with '..' or is an absolute path (e.g. different drive on Windows)
+  if (rel === '..' || rel.startsWith('..' + path.sep) || rel.startsWith('../') || path.isAbsolute(rel)) {
     throw new Error('Path traversal attempt detected outside workspace: ' + target);
   }
-  return resolved;
+
+  // Symlink checks:
+  if (fs.existsSync(resolved)) {
+    const realResolved = fs.realpathSync(resolved);
+    const realRel = path.relative(canonicalRoot, realResolved);
+    if (realRel === '..' || realRel.startsWith('..' + path.sep) || realRel.startsWith('../') || path.isAbsolute(realRel)) {
+      throw new Error('Symlink target escapes active workspace: ' + target);
+    }
+    return realResolved;
+  } else {
+    // For non-existent files being created/written, ensure ancestor directory doesn't escape via symlink
+    let parent = path.dirname(resolved);
+    while (!fs.existsSync(parent) && parent !== path.dirname(parent)) {
+      parent = path.dirname(parent);
+    }
+    if (fs.existsSync(parent)) {
+      const realParent = fs.realpathSync(parent);
+      const realParentRel = path.relative(canonicalRoot, realParent);
+      if (realParentRel === '..' || realParentRel.startsWith('..' + path.sep) || realParentRel.startsWith('../') || path.isAbsolute(realParentRel)) {
+        throw new Error('Parent directory symlink target escapes active workspace: ' + target);
+      }
+    }
+    return resolved;
+  }
 }
 
 export function getProvider() {
@@ -216,10 +312,43 @@ export async function handleApiRequest(req, res, customProvider) {
   const url = new URL(req.url, 'http://localhost');
   const pathname = url.pathname;
 
-  // Add CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const headers = req.headers || {};
+  const origin = headers.origin;
+  const host = headers.host;
+
+  // Validate Host header against DNS rebinding
+  if (host && !isAllowedHost(host)) {
+    jsonResponse(res, 403, { ok: false, error: 'Forbidden: Invalid Host header' });
+    return true;
+  }
+
+  // Cross-site fetch metadata protection
+  if (headers['sec-fetch-site'] === 'cross-site') {
+    jsonResponse(res, 403, { ok: false, error: 'Forbidden: Cross-site request blocked' });
+    return true;
+  }
+
+  // CORS origin handling: never allow arbitrary external origins
+  if (origin) {
+    if (isAllowedOrigin(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    } else {
+      if (req.method === 'OPTIONS') {
+        res.statusCode = 403;
+        res.end();
+        return true;
+      }
+      jsonResponse(res, 403, { ok: false, error: 'Forbidden: Cross-origin request not allowed from origin ' + origin });
+      return true;
+    }
+  } else {
+    // Non-browser local requests or same-origin local development fallback
+    res.setHeader('Access-Control-Allow-Origin', 'http://127.0.0.1:5173');
+  }
+
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
 
   if (req.method === 'OPTIONS') {
     res.statusCode = 204;
@@ -347,14 +476,21 @@ export async function handleApiRequest(req, res, customProvider) {
       jsonResponse(res, 400, { ok: false, error: err.message });
       return true;
     }
-    const { tool, args = {} } = body || {};
+    const { tool, args = {}, confirmationToken } = body || {};
     if (!tool) {
       jsonResponse(res, 400, { ok: false, error: '"tool" name is required.' });
       return true;
     }
+    // Never trust client-supplied args.__confirmed over HTTP API
+    const safeArgs = { ...args };
+    delete safeArgs.__confirmed;
+
     try {
-      const result = await extensionManager.bridge.executeTool(tool, args, {
+      const result = await extensionManager.bridge.executeTool(tool, safeArgs, {
         workspaceRoot: activeWorkspaceRoot,
+        confirmationToken: confirmationToken || body?.confirmationToken || args?.__confirmationToken,
+        requireTokenOnly: true,
+        isClientRequest: true,
       });
       jsonResponse(res, result.ok ? 200 : 400, result);
     } catch (err) {
@@ -946,9 +1082,14 @@ export async function handleApiRequest(req, res, customProvider) {
         jsonResponse(res, 400, { ok: false, error: 'Target workspace directory path is required.' });
         return true;
       }
-      const targetDir = path.isAbsolute(newPath)
-        ? path.resolve(newPath)
-        : path.resolve(activeWorkspaceRoot, newPath);
+      const cleanPath = newPath.trim();
+      if (cleanPath.startsWith('\\\\') || cleanPath.startsWith('//') || /^[/\\]{2}/.test(cleanPath)) {
+        jsonResponse(res, 400, { ok: false, error: 'Access denied: UNC paths are not permitted as workspace roots.' });
+        return true;
+      }
+      const targetDir = path.isAbsolute(cleanPath)
+        ? path.resolve(cleanPath)
+        : path.resolve(activeWorkspaceRoot, cleanPath);
 
       if (!fs.existsSync(targetDir)) {
         jsonResponse(res, 404, { ok: false, error: 'Directory does not exist: ' + targetDir });
@@ -960,7 +1101,7 @@ export async function handleApiRequest(req, res, customProvider) {
         return true;
       }
 
-      activeWorkspaceRoot = targetDir;
+      activeWorkspaceRoot = fs.realpathSync(targetDir);
       jsonResponse(res, 200, {
         ok: true,
         workspaceRoot: activeWorkspaceRoot,

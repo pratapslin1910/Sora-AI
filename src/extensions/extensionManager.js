@@ -320,9 +320,25 @@ export class ExtensionManager {
     }
 
     const id = manifest.id;
+    if (!id || typeof id !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(id)) {
+      throw new Error(`Invalid extension id "${id}": Must contain only alphanumeric characters, underscores, and hyphens.`);
+    }
 
     // Destination in extensions/ folder
-    const targetDir = path.resolve(this.extensionsDir, id);
+    const canonicalExtDir = fs.existsSync(this.extensionsDir)
+      ? fs.realpathSync(this.extensionsDir)
+      : path.resolve(this.extensionsDir);
+    const targetDir = path.resolve(canonicalExtDir, id);
+    const relTarget = path.relative(canonicalExtDir, targetDir);
+    if (
+      relTarget === '..' ||
+      relTarget.startsWith('..' + path.sep) ||
+      relTarget.startsWith('../') ||
+      path.isAbsolute(relTarget) ||
+      relTarget === '.'
+    ) {
+      throw new Error(`Invalid extension destination directory: target escapes extensions directory.`);
+    }
 
     // If source folder is not already inside extensions/<id>, copy it
     if (resolvedPath !== targetDir) {
@@ -364,11 +380,14 @@ export class ExtensionManager {
     delete this._persistedState[id];
 
     // Remove folder from disk if it's within extensionsDir
-    if (dirPath && dirPath.startsWith(this.extensionsDir)) {
-      try {
-        fs.rmSync(dirPath, { recursive: true, force: true });
-      } catch (err) {
-        console.warn(`[ExtensionManager] Could not remove directory ${dirPath}:`, err.message);
+    if (dirPath) {
+      const relDir = path.relative(this.extensionsDir, dirPath);
+      if (relDir && relDir !== '.' && !relDir.startsWith('..') && !path.isAbsolute(relDir)) {
+        try {
+          fs.rmSync(dirPath, { recursive: true, force: true });
+        } catch (err) {
+          console.warn(`[ExtensionManager] Could not remove directory ${dirPath}:`, err.message);
+        }
       }
     }
 
