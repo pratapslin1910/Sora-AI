@@ -113,6 +113,8 @@ export function stripToolCallsFromText(text) {
   cleaned = cleaned.replace(/\[(?:Called tool|Tool call):[^\]]*\]/gi, '');
   // Hide incomplete protocol blocks while tokens are still streaming.
   cleaned = cleaned.replace(/<(?:dots_function_call|function_calls|tool_call)\b[^>]*>[\s\S]*$/i, '');
+  cleaned = cleaned.replace(/<invoke\b[^>]*>[\s\S]*?<\/invoke\s*>/gi, '');
+  cleaned = cleaned.replace(/<invoke\b[^>]*>[\s\S]*$/i, '');
   cleaned = cleaned.replace(/<\/?(?:invoke|parameter)\b[^>]*>/gi, '');
   cleaned = cleaned.replace(/<\/?(?:dots_function_call|function_calls|tool_call)\b[^>]*>/gi, '');
   for (let guard = 0; guard < 10; guard++) {
