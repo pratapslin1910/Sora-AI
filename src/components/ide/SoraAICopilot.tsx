@@ -34,6 +34,7 @@ import {
 } from '../../services/chatService';
 import { executeExtensionTool, fetchExtensionTools } from '../../services/extensionService';
 import { parseToolCallFromText, stripToolCallsFromText } from '../../utils/toolParser';
+import { readCopilotSession, writeCopilotSession } from '../../utils/ideSessionState.js';
 import { OpenTab } from './types';
 
 export interface AgentToolCall {
@@ -80,13 +81,14 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
   onRunTerminalCommand,
   onRefreshExplorer,
 }) => {
-  const [messages, setMessages] = useState<AgentMessage[]>([
-    {
+  const [messages, setMessages] = useState<AgentMessage[]>(() => {
+    const restored = readCopilotSession(workspaceRoot);
+    return restored.length > 0 ? restored : [{
       id: 'welcome',
       role: 'assistant',
       content: `👋 **Sora AI Copilot is ready.**\n\nActive workspace: \`${workspaceRoot}\`.\nI can inspect and edit project files, search the workspace, run terminal commands, and verify changes. I’ll report only actions and results that I have actually completed.`,
-    },
-  ]);
+    }];
+  });
   const [userInput, setUserInput] = useState<string>('');
   const [attachedImage, setAttachedImage] = useState<{ name: string; dataUrl: string } | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -135,6 +137,14 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isAgentRunning, agentPhase]);
+
+  // Debounced recovery snapshot preserves the Copilot conversation across IDE reloads.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      writeCopilotSession(workspaceRoot, messages);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [workspaceRoot, messages]);
 
   const toggleToolCallExpand = (id: string) => {
     setExpandedToolCalls((prev) => ({ ...prev, [id]: !prev[id] }));
