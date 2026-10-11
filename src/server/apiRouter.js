@@ -32,6 +32,7 @@ import { parseReasoningAndAnswer } from './responseParser.js';
 
 import { fileURLToPath } from 'node:url';
 import { getExtensionManager } from '../extensions/index.js';
+import { requiresWorkspaceOperationConfirmation, shouldRequireConfirmationForDelete } from './fileOperationPolicy.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1209,17 +1210,37 @@ export async function handleApiRequest(req, res, customProvider) {
   if (req.method === 'POST' && pathname === '/api/ide/write') {
     try {
       const body = await parseJsonBody(req);
-      const { path: relPath, content } = body;
+      const { path: relPath, content, confirmed = false } = body;
       if (!relPath) {
         jsonResponse(res, 400, { ok: false, error: 'Path is required' });
         return true;
       }
+      if (typeof content !== 'string') {
+        jsonResponse(res, 400, { ok: false, error: 'File content must be a string. Refusing an implicit empty overwrite.' });
+        return true;
+      }
       const targetFile = resolveSafePath(relPath);
+      const exists = fs.existsSync(targetFile) && fs.statSync(targetFile).isFile();
+      const existingContent = exists ? fs.readFileSync(targetFile, 'utf8') : '';
+      if (exists && requiresWorkspaceOperationConfirmation({
+        operation: 'write',
+        relativePath: path.relative(activeWorkspaceRoot, targetFile),
+        existingContent,
+        newContent: content,
+      }) && confirmed !== true) {
+        jsonResponse(res, 409, {
+          ok: false,
+          requiresConfirmation: true,
+          error: 'This existing JSON, settings, credential, or potentially destructive file change requires explicit user confirmation before saving.',
+          path: relPath,
+        });
+        return true;
+      }
       const parentDir = path.dirname(targetFile);
       if (!fs.existsSync(parentDir)) {
         fs.mkdirSync(parentDir, { recursive: true });
       }
-      fs.writeFileSync(targetFile, content ?? '', 'utf8');
+      fs.writeFileSync(targetFile, content, 'utf8');
       jsonResponse(res, 200, {
         ok: true,
         path: relPath.replace(/\\/g, '/'),
@@ -1263,7 +1284,7 @@ export async function handleApiRequest(req, res, customProvider) {
   if (req.method === 'POST' && pathname === '/api/ide/rename') {
     try {
       const body = await parseJsonBody(req);
-      const { oldPath, newPath } = body;
+      const { oldPath, newPath, confirmed = false } = body;
       if (!oldPath || !newPath) {
         jsonResponse(res, 400, { ok: false, error: 'Both oldPath and newPath are required' });
         return true;
@@ -1272,6 +1293,16 @@ export async function handleApiRequest(req, res, customProvider) {
       const targetNew = resolveSafePath(newPath);
       if (!fs.existsSync(targetOld)) {
         jsonResponse(res, 404, { ok: false, error: 'Source not found: ' + oldPath });
+        return true;
+      }
+      const oldRel = path.relative(activeWorkspaceRoot, targetOld);
+      const newRel = path.relative(activeWorkspaceRoot, targetNew);
+      if ((shouldRequireConfirmationForDelete(oldRel) || shouldRequireConfirmationForDelete(newRel)) && confirmed !== true) {
+        jsonResponse(res, 409, { ok: false, requiresConfirmation: true, error: 'Renaming JSON or configuration files requires explicit user confirmation.', oldPath, newPath });
+        return true;
+      }
+      if (confirmed !== true) {
+        jsonResponse(res, 409, { ok: false, requiresConfirmation: true, error: 'Renaming a file moves it from its current path. Explicit user confirmation is required.', oldPath, newPath });
         return true;
       }
       const parentDir = path.dirname(targetNew);
@@ -1294,7 +1325,7 @@ export async function handleApiRequest(req, res, customProvider) {
   if (req.method === 'POST' && pathname === '/api/ide/delete') {
     try {
       const body = await parseJsonBody(req);
-      const { path: relPath } = body;
+      const { path: relPath, confirmed = false } = body;
       if (typeof relPath !== 'string') {
         jsonResponse(res, 400, { ok: false, error: 'Path is required' });
         return true;
@@ -1305,7 +1336,8 @@ export async function handleApiRequest(req, res, customProvider) {
         return true;
       }
       const target = resolveSafePath(trimmed);
-      // Essential safeguard: Prevent deleting the active workspace root itself
+      // Essential safeguards must run before confirmation checks so protected paths
+      // cannot be deleted even when the caller explicitly confirms.
       if (
         path.resolve(target) === path.resolve(activeWorkspaceRoot) ||
         !path.relative(activeWorkspaceRoot, target) ||
@@ -1314,10 +1346,21 @@ export async function handleApiRequest(req, res, customProvider) {
         jsonResponse(res, 400, { ok: false, error: 'Cannot delete the active workspace root folder.' });
         return true;
       }
-      // Essential safeguard: Protect .git metadata repository folder
       const relNorm = path.relative(activeWorkspaceRoot, target).replace(/\\/g, '/');
       if (relNorm === '.git' || relNorm.startsWith('.git/')) {
         jsonResponse(res, 403, { ok: false, error: 'Cannot delete .git repository directory.' });
+        return true;
+      }
+      if (fs.existsSync(target) && confirmed !== true) {
+        const relTarget = path.relative(activeWorkspaceRoot, target);
+        jsonResponse(res, 409, {
+          ok: false,
+          requiresConfirmation: true,
+          error: shouldRequireConfirmationForDelete(relTarget)
+            ? 'Deleting JSON, settings, credential, or environment files requires explicit user confirmation.'
+            : 'Deleting a file or folder requires explicit user confirmation.',
+          path: relPath,
+        });
         return true;
       }
       if (fs.existsSync(target)) {

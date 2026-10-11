@@ -600,12 +600,20 @@ export async function readWorkspaceFile(filePath: string): Promise<{ ok: boolean
 
 export async function writeWorkspaceFile(filePath: string, content: string): Promise<{ ok: boolean; path: string; savedAt?: string; error?: string }> {
   try {
-    const res = await fetch('/api/ide/write', {
+    const send = (confirmed = false) => fetch('/api/ide/write', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: filePath, content }),
+      body: JSON.stringify({ path: filePath, content, confirmed }),
     });
-    return await res.json();
+    let res = await send();
+    let data = await res.json();
+    if (res.status === 409 && data?.requiresConfirmation && typeof window !== 'undefined') {
+      const approved = window.confirm(`Sora wants to overwrite an existing file that may contain settings or sensitive data:\n\n${filePath}\n\nOnly continue if you have reviewed the change and want to replace this file's contents.`);
+      if (!approved) return { ...data, ok: false, path: filePath, error: 'Save cancelled by user. The original file was not changed.' };
+      res = await send(true);
+      data = await res.json();
+    }
+    return { ...data, ok: Boolean(data?.ok), path: data?.path || filePath };
   } catch (err: any) {
     return { ok: false, path: filePath, error: err.message };
   }
@@ -626,12 +634,20 @@ export async function createWorkspaceItem(filePath: string, isDir: boolean): Pro
 
 export async function renameWorkspaceItem(oldPath: string, newPath: string): Promise<{ ok: boolean; oldPath: string; newPath: string; error?: string }> {
   try {
-    const res = await fetch('/api/ide/rename', {
+    const send = (confirmed = false) => fetch('/api/ide/rename', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ oldPath, newPath }),
+      body: JSON.stringify({ oldPath, newPath, confirmed }),
     });
-    return await res.json();
+    let res = await send();
+    let data = await res.json();
+    if (res.status === 409 && data?.requiresConfirmation && typeof window !== 'undefined') {
+      const approved = window.confirm(`Confirm file rename/move:\n\n${oldPath}\n→ ${newPath}\n\nRenaming configuration or JSON files can make app settings unavailable.`);
+      if (!approved) return { ...data, ok: false, oldPath, newPath, error: 'Rename cancelled by user. The original file was not moved.' };
+      res = await send(true);
+      data = await res.json();
+    }
+    return { ...data, ok: Boolean(data?.ok), oldPath, newPath };
   } catch (err: any) {
     return { ok: false, oldPath, newPath, error: err.message };
   }
@@ -639,12 +655,20 @@ export async function renameWorkspaceItem(oldPath: string, newPath: string): Pro
 
 export async function deleteWorkspaceItem(filePath: string): Promise<{ ok: boolean; path: string; error?: string }> {
   try {
-    const res = await fetch('/api/ide/delete', {
+    const send = (confirmed = false) => fetch('/api/ide/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: filePath }),
+      body: JSON.stringify({ path: filePath, confirmed }),
     });
-    return await res.json();
+    let res = await send();
+    let data = await res.json();
+    if (res.status === 409 && data?.requiresConfirmation && typeof window !== 'undefined') {
+      const approved = window.confirm(`Confirm permanent deletion:\n\n${filePath}\n\nThis may delete JSON settings or configuration data. Continue only if you are certain.`);
+      if (!approved) return { ...data, ok: false, path: filePath, error: 'Deletion cancelled by user. The file was not deleted.' };
+      res = await send(true);
+      data = await res.json();
+    }
+    return { ...data, ok: Boolean(data?.ok), path: data?.path || filePath };
   } catch (err: any) {
     return { ok: false, path: filePath, error: err.message };
   }

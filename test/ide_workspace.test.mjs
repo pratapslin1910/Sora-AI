@@ -112,13 +112,22 @@ describe('IDE & Workspace Endpoints Tests', () => {
 
   it('POST /api/ide/rename renames files and POST /api/ide/delete removes files', async () => {
     // Rename file
+    const renameRequest = {
+      oldPath: 'src/index.ts',
+      newPath: 'src/main.ts',
+    };
+    const blockedRename = await fetch(`${baseUrl}/api/ide/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(renameRequest),
+    });
+    assert.equal(blockedRename.status, 409);
+    assert.equal((await blockedRename.json()).requiresConfirmation, true);
+
     const renameRes = await fetch(`${baseUrl}/api/ide/rename`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        oldPath: 'src/index.ts',
-        newPath: 'src/main.ts',
-      }),
+      body: JSON.stringify({ ...renameRequest, confirmed: true }),
     });
     assert.equal(renameRes.status, 200);
     const renameData = await renameRes.json();
@@ -134,10 +143,19 @@ describe('IDE & Workspace Endpoints Tests', () => {
     assert.equal(readOldRes.status, 404);
 
     // Delete file
+    const deleteRequest = { path: 'src/main.ts' };
+    const blockedDelete = await fetch(`${baseUrl}/api/ide/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(deleteRequest),
+    });
+    assert.equal(blockedDelete.status, 409);
+    assert.equal((await blockedDelete.json()).requiresConfirmation, true);
+
     const deleteRes = await fetch(`${baseUrl}/api/ide/delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: 'src/main.ts' }),
+      body: JSON.stringify({ ...deleteRequest, confirmed: true }),
     });
     assert.equal(deleteRes.status, 200);
 

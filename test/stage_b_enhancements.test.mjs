@@ -62,13 +62,22 @@ describe('Stage B Enhancements & Reliability Regression Tests', () => {
       assert.equal(createRes.status, 200);
 
       // Write content
+      const writeRequest = {
+        path: '/deeply/nested/folder/config.json',
+        content: '{"key": "workspace-freedom"}',
+      };
+      const blockedWrite = await fetch(`${baseUrl}/api/ide/write`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(writeRequest),
+      });
+      assert.equal(blockedWrite.status, 409);
+      assert.equal((await blockedWrite.json()).requiresConfirmation, true);
+
       const writeRes = await fetch(`${baseUrl}/api/ide/write`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          path: '/deeply/nested/folder/config.json',
-          content: '{"key": "workspace-freedom"}',
-        }),
+        body: JSON.stringify({ ...writeRequest, confirmed: true }),
       });
       assert.equal(writeRes.status, 200);
 
