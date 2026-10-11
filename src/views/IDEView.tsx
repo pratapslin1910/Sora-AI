@@ -177,20 +177,23 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
   // Persist the IDE session after initial workspace restoration. Storage failures must never crash the IDE.
   useEffect(() => {
     if (!sessionReady) return;
-    writeIdeSession({
-      workspaceRoot,
-      currentPath,
-      tabs,
-      activeTabPath,
-      activeActivityTab,
-      sidebarOpen,
-      copilotOpen,
-      terminalOpen,
-      cursorPos,
-      wordWrap,
-      minimapEnabled,
-      terminalHistory,
-    });
+    const timer = window.setTimeout(() => {
+      writeIdeSession({
+        workspaceRoot,
+        currentPath,
+        tabs,
+        activeTabPath,
+        activeActivityTab,
+        sidebarOpen,
+        copilotOpen,
+        terminalOpen,
+        cursorPos,
+        wordWrap,
+        minimapEnabled,
+        terminalHistory,
+      });
+    }, 200);
+    return () => window.clearTimeout(timer);
   }, [sessionReady, workspaceRoot, currentPath, tabs, activeTabPath, activeActivityTab, sidebarOpen, copilotOpen, terminalOpen, cursorPos, wordWrap, minimapEnabled, terminalHistory]);
 
   // ── File Operations ──────────────────────────────────────────────────────
