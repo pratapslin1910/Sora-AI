@@ -1336,6 +1336,21 @@ export async function handleApiRequest(req, res, customProvider) {
         return true;
       }
       const target = resolveSafePath(trimmed);
+      // Essential safeguards must run before confirmation checks so protected paths
+      // cannot be deleted even when the caller explicitly confirms.
+      if (
+        path.resolve(target) === path.resolve(activeWorkspaceRoot) ||
+        !path.relative(activeWorkspaceRoot, target) ||
+        path.relative(activeWorkspaceRoot, target) === '.'
+      ) {
+        jsonResponse(res, 400, { ok: false, error: 'Cannot delete the active workspace root folder.' });
+        return true;
+      }
+      const relNorm = path.relative(activeWorkspaceRoot, target).replace(/\\/g, '/');
+      if (relNorm === '.git' || relNorm.startsWith('.git/')) {
+        jsonResponse(res, 403, { ok: false, error: 'Cannot delete .git repository directory.' });
+        return true;
+      }
       if (fs.existsSync(target) && confirmed !== true) {
         const relTarget = path.relative(activeWorkspaceRoot, target);
         jsonResponse(res, 409, {
@@ -1346,21 +1361,6 @@ export async function handleApiRequest(req, res, customProvider) {
             : 'Deleting a file or folder requires explicit user confirmation.',
           path: relPath,
         });
-        return true;
-      }
-      // Essential safeguard: Prevent deleting the active workspace root itself
-      if (
-        path.resolve(target) === path.resolve(activeWorkspaceRoot) ||
-        !path.relative(activeWorkspaceRoot, target) ||
-        path.relative(activeWorkspaceRoot, target) === '.'
-      ) {
-        jsonResponse(res, 400, { ok: false, error: 'Cannot delete the active workspace root folder.' });
-        return true;
-      }
-      // Essential safeguard: Protect .git metadata repository folder
-      const relNorm = path.relative(activeWorkspaceRoot, target).replace(/\\/g, '/');
-      if (relNorm === '.git' || relNorm.startsWith('.git/')) {
-        jsonResponse(res, 403, { ok: false, error: 'Cannot delete .git repository directory.' });
         return true;
       }
       if (fs.existsSync(target)) {
