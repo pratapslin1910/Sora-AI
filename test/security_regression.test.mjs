@@ -232,6 +232,7 @@ describe('FIX 3 — Workspace path containment and Sandbox containment', () => {
     const { resolveSafePath } = await import('../src/server/apiRouter.js');
     const tmpDir = path.join(ROOT, 'temp_symlink_test_' + Date.now());
     const outsideTarget = path.join(ROOT, '..', 'temp_outside_' + Date.now() + '.txt');
+    const relativeSymlinkPath = path.relative(ROOT, path.join(tmpDir, 'symlink_outside.txt'));
     try {
       fs.mkdirSync(tmpDir, { recursive: true });
       fs.writeFileSync(outsideTarget, 'outside content');
@@ -239,7 +240,7 @@ describe('FIX 3 — Workspace path containment and Sandbox containment', () => {
       try {
         fs.symlinkSync(outsideTarget, symlinkPath);
         assert.throws(
-          () => resolveSafePath('temp_symlink_test_' + Date.now() + '/symlink_outside.txt'),
+          () => resolveSafePath(relativeSymlinkPath),
           /(Symlink target escapes active workspace|Path traversal attempt detected)/,
           'Symlink target pointing outside must be rejected'
         );
