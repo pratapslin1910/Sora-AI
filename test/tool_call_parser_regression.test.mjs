@@ -32,6 +32,15 @@ describe('Tool-call protocol regression coverage', () => {
     ]);
   });
 
+  it('allows a legitimate repeated call when another action separates it', () => {
+    const response = '<dots_function_call><invoke name="read_file"><parameter name="path">same.txt</parameter></invoke><invoke name="list_directory"><parameter name="path">subfolder</parameter></invoke><invoke name="read_file"><parameter name="path">same.txt</parameter></invoke></dots_function_call>';
+    assert.deepEqual(parseToolCallsFromText(response).map((call) => [call.tool, call.args.path]), [
+      ['read_file', 'same.txt'],
+      ['list_directory', 'subfolder'],
+      ['read_file', 'same.txt'],
+    ]);
+  });
+
   it('decodes XML entities and parses JSON-valued parameters', () => {
     const response = '<dots_function_call><invoke name="write_file"><parameter name="path">a&amp;b.txt</parameter><parameter name="content">{"enabled":true}</parameter></invoke></dots_function_call>';
     assert.deepEqual(parseToolCallFromText(response)?.args, { path: 'a&b.txt', content: { enabled: true } });
