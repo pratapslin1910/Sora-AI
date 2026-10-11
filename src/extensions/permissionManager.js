@@ -183,7 +183,7 @@ export class PermissionManager {
     }
 
     const payloadHash = hashToolPayload(toolName, args);
-    if (data.toolName !== toolName || data.payloadHash !== payloadHash) {
+    if (data.extensionId !== extensionId || data.toolName !== toolName || data.payloadHash !== payloadHash) {
       return false;
     }
 
