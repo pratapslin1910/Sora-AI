@@ -45,7 +45,7 @@ import SettingsIcon from '@mui/icons-material/Settings';
 import ExtensionIcon from '@mui/icons-material/Extension';
 import { ExtensionsManagerView } from './components/settings/ExtensionsManagerView';
 import { executeExtensionTool } from './services/extensionService';
-import { parseToolCallFromText, stripToolCallsFromText, sanitizeContentForModel } from './utils/toolParser';
+import { parseToolCallsFromText, stripToolCallsFromText, sanitizeContentForModel } from './utils/toolParser';
 import {
   GatewayHealth,
   ChatSession,
@@ -997,6 +997,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
     };
 
     let accumulatedContent = '';
+    let onDoneHandled = false;
 
     // Send history to backend
     await streamChatMessage(
@@ -1065,17 +1066,19 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
             if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
               const prevContent = updated[lastIdx].content;
               const nextContent = (typeof prevContent === 'string' ? prevContent : '') + token;
-              // Strip ALL raw tool_call syntax (closed/unclosed tags, code blocks, bare JSON)
+              // Never fall back to raw provider output: unfinished tool markup must stay hidden.
               const cleanedContent = stripToolCallsFromText(nextContent);
               updated[lastIdx] = {
                 ...updated[lastIdx],
-                content: cleanedContent !== '' ? cleanedContent : nextContent,
+                content: cleanedContent,
               };
             }
             return updated;
           });
         },
         onDone: async () => {
+          if (onDoneHandled) return;
+          onDoneHandled = true;
           const finalDuration = Math.round((Date.now() - startTime) / 100) / 10;
 
           // Strip any raw tool call text from the displayed bubble immediately
@@ -1092,57 +1095,53 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
             return updated;
           });
 
-          // Check for autonomous tool execution
-          const toolCall = parseToolCallFromText(accumulatedContent);
-          if (toolCall) {
-            // Update thinking log with requested action
-            setMessages((prev) => {
-              const updated = [...prev];
-              const lastIdx = updated.length - 1;
-              if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
-                const logs = [...(updated[lastIdx].thinkingLog || [])];
-                logs.push(`Invoking tool: ${toolCall.tool}...`);
-                updated[lastIdx] = {
-                  ...updated[lastIdx],
-                  content: '*Executing ' + toolCall.tool + '...*',
-                  thinkingLog: logs,
-                };
-              }
-              return updated;
-            });
+          // Parse every supported invocation format and execute each distinct call once per assistant turn.
+          const toolCalls = parseToolCallsFromText(accumulatedContent);
+          if (toolCalls.length > 0) {
+            const toolResults: Array<{ tool: string; ok: boolean; data?: unknown; error?: string }> = [];
 
-            // Execute the tool through extension service
-            let toolRes: any;
-            try {
-              toolRes = await executeExtensionTool(toolCall.tool, toolCall.args);
-            } catch (err: any) {
-              toolRes = { ok: false, error: err?.message || 'Tool execution failed' };
+            for (const toolCall of toolCalls) {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const lastIdx = updated.length - 1;
+                if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+                  const logs = [...(updated[lastIdx].thinkingLog || [])];
+                  logs.push(`Invoking tool: ${toolCall.tool}...`);
+                  updated[lastIdx] = {
+                    ...updated[lastIdx],
+                    content: `*Executing ${toolCall.tool}...*`,
+                    thinkingLog: logs,
+                  };
+                }
+                return updated;
+              });
+
+              let toolRes: any;
+              try {
+                toolRes = await executeExtensionTool(toolCall.tool, toolCall.args);
+              } catch (err: any) {
+                toolRes = { ok: false, error: err?.message || 'Tool execution failed' };
+              }
+
+              toolResults.push(toolRes?.ok
+                ? { tool: toolCall.tool, ok: true, data: toolRes.data }
+                : { tool: toolCall.tool, ok: false, error: toolRes?.error || 'Tool execution failed' });
+
+              setMessages((prev) => {
+                const updated = [...prev];
+                const lastIdx = updated.length - 1;
+                if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+                  const logs = [...(updated[lastIdx].thinkingLog || [])];
+                  logs.push(toolRes?.ok
+                    ? `✓ Executed ${toolCall.tool} successfully`
+                    : `⚠️ ${toolCall.tool}: ${toolRes?.error || 'Failed'}`);
+                  updated[lastIdx] = { ...updated[lastIdx], content: '', thinkingLog: logs };
+                }
+                return updated;
+              });
             }
 
-            // Update thinking log with tool result
-            setMessages((prev) => {
-              const updated = [...prev];
-              const lastIdx = updated.length - 1;
-              if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
-                const logs = [...(updated[lastIdx].thinkingLog || [])];
-                if (toolRes?.ok) {
-                  logs.push(`✓ Executed ${toolCall.tool} successfully`);
-                } else {
-                  logs.push(`⚠️ ${toolCall.tool}: ${toolRes?.error || 'Failed'}`);
-                }
-                updated[lastIdx] = {
-                  ...updated[lastIdx],
-                  content: '', // Clear so Sora's conversational confirmation streams in cleanly
-                  thinkingLog: logs,
-                };
-              }
-              return updated;
-            });
-
-            // Follow-up stream turn for Sora's conversational confirmation.
-            // Sanitize ALL messages in the history so the model never sees raw tool call
-            // text (including [Called tool: ...] markers from earlier turns) and is not
-            // tempted to echo them back in its response.
+            // Keep tool protocol out of history and let the model synthesize one final user-facing answer.
             const sanitizedPriorMessages = messagesToSend.map((m) => {
               if (m.role === 'assistant') {
                 const raw = typeof m.content === 'string' ? m.content : '';
@@ -1152,25 +1151,20 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
               return m;
             });
 
+            const toolNames = toolCalls.map((call) => call.tool).join(', ');
             const followUpMessages = [
               ...sanitizedPriorMessages,
               {
                 role: 'assistant',
-                content: `I used the ${toolCall.tool} tool to carry out the action.`,
+                content: `I used these tools to work on the request: ${toolNames}.`,
               },
               {
                 role: 'user',
-                content: `<tool_result>\n${JSON.stringify(
-                  toolRes?.ok ? toolRes.data : { error: toolRes?.error },
-                  null,
-                  2
-                )}\n</tool_result>\n\nIn one or two warm, natural sentences, tell the user what you just did in your Sora persona. Output only conversational text — no <tool_call> blocks, no [Called tool:] markers, no JSON, no markdown code fences.`,
+                content: `<tool_result>\n${JSON.stringify(toolResults, null, 2)}\n</tool_result>\n\nUse these actual tool results to answer the user's original question in one or two warm, natural sentences. Output only conversational text. Do not emit tool calls, XML tags, raw JSON, or code fences.`,
               },
             ];
 
-            // Accumulate follow-up stream separately so we can strip before display
             let followUpAccumulated = '';
-
             await streamChatMessage(
               followUpMessages as any,
               {
@@ -1179,24 +1173,17 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                 currentChatId: activeChatIdRef.current,
                 onToken: (tok) => {
                   followUpAccumulated += tok;
-                  // Defer display update via a separate setMessages call
                   const displayText = sanitizeContentForModel(followUpAccumulated);
                   setMessages((prev) => {
                     const updated = [...prev];
                     const lastIdx = updated.length - 1;
                     if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
-                      updated[lastIdx] = {
-                        ...updated[lastIdx],
-                        // Show displayText if stripping produced something; otherwise
-                        // show nothing (prevents partial [Called tool: text flickering)
-                        content: displayText,
-                      };
+                      updated[lastIdx] = { ...updated[lastIdx], content: displayText };
                     }
                     return updated;
                   });
                 },
                 onDone: () => {
-                  // Final clean pass on the complete follow-up response
                   const finalClean = sanitizeContentForModel(followUpAccumulated);
                   setMessages((prev) => {
                     const updated = [...prev];
