@@ -138,6 +138,28 @@ describe('FIX 2 — Server-side confirmation token flow', async () => {
     assert.equal(reused.allowed, false, 'Token must be single-use');
   });
 
+  it('confirmation tokens are bound to the issuing extension and mismatches do not consume them', () => {
+    const pm = new PermissionManager({ 'ext-1': { terminal: true }, 'ext-2': { terminal: true } }, 'strict');
+    const args = { command: 'node -v' };
+    const token = pm.createConfirmationToken('ext-1', 'terminal_execute', args);
+
+    assert.equal(
+      pm.validateAndConsumeConfirmationToken(token, 'ext-2', 'terminal_execute', args),
+      false,
+      'A token issued to ext-1 must not validate for ext-2'
+    );
+    assert.equal(
+      pm.validateAndConsumeConfirmationToken(token, 'ext-1', 'terminal_execute', args),
+      true,
+      'A mismatched extension attempt must not consume the valid token'
+    );
+    assert.equal(
+      pm.validateAndConsumeConfirmationToken(token, 'ext-1', 'terminal_execute', args),
+      false,
+      'The token remains single-use after successful validation'
+    );
+  });
+
   it('tokens are payload-bound — wrong args invalidate token', () => {
     const pm = new PermissionManager({ 'ext-1': { terminal: true } }, 'strict');
     const toolDef = { name: 'terminal_execute', requiredPermissions: ['terminal'] };
