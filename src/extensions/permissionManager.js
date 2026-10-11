@@ -5,6 +5,10 @@
  * Enforces non-default-unrestricted access and confirmation/safeguard policies.
  */
 
+import crypto from 'node:crypto';
+import path from 'node:path';
+import fs from 'node:fs';
+
 export const KNOWN_PERMISSIONS = Object.freeze({
   BROWSER: 'browser',
   APPS: 'apps',
@@ -55,6 +59,61 @@ const SANDBOX_ALLOWED_APPS = new Set([
   'cmd',
 ]);
 
+function hashToolPayload(toolName, args = {}) {
+  const sanitized = { ...args };
+  delete sanitized.__confirmed;
+  delete sanitized.__confirmationToken;
+  delete sanitized.confirmationToken;
+  return crypto.createHash('sha256').update(String(toolName) + ':' + JSON.stringify(sanitized)).digest('hex');
+}
+
+/**
+ * Safely verify that a target path is contained strictly within the active workspace root.
+ * Rejects traversal, UNC paths, cross-drive paths, sibling directory bypasses, and symlink escapes.
+ * @param {string} targetPath
+ * @param {string} [workspaceRoot]
+ * @returns {boolean}
+ */
+export function isPathInsideWorkspace(targetPath, workspaceRoot) {
+  if (!targetPath || typeof targetPath !== 'string') return false;
+  const root = workspaceRoot || process.cwd();
+  const cleanTarget = String(targetPath).trim();
+
+  // Reject UNC paths
+  if (cleanTarget.startsWith('\\\\') || cleanTarget.startsWith('//') || /^[/\\]{2}/.test(cleanTarget)) {
+    return false;
+  }
+
+  const canonicalRoot = fs.existsSync(root)
+    ? fs.realpathSync(root)
+    : path.resolve(root);
+
+  const isDriveAbsolute = /^[a-zA-Z]:[/\\]/.test(cleanTarget) || (process.platform !== 'win32' && path.isAbsolute(cleanTarget));
+  let resolvedTarget;
+  if (/^[/\\]/.test(cleanTarget) && !/^[a-zA-Z]:[/\\]/.test(cleanTarget)) {
+    resolvedTarget = path.resolve(canonicalRoot, cleanTarget.replace(/^[/\\]+/, ''));
+  } else if (isDriveAbsolute) {
+    resolvedTarget = path.resolve(cleanTarget);
+  } else {
+    resolvedTarget = path.resolve(canonicalRoot, cleanTarget);
+  }
+
+  const rel = path.relative(canonicalRoot, resolvedTarget);
+  if (rel === '..' || rel.startsWith('..' + path.sep) || rel.startsWith('../') || path.isAbsolute(rel)) {
+    return false;
+  }
+
+  if (fs.existsSync(resolvedTarget)) {
+    const realResolved = fs.realpathSync(resolvedTarget);
+    const realRel = path.relative(canonicalRoot, realResolved);
+    if (realRel === '..' || realRel.startsWith('..' + path.sep) || realRel.startsWith('../') || path.isAbsolute(realRel)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export class PermissionManager {
   constructor(initialGrants = {}, allowanceMode = PERMISSION_ALLOWANCE_MODES.FULL_ACCESS) {
     /**
@@ -63,6 +122,11 @@ export class PermissionManager {
      */
     this._grants = new Map();
     this.allowanceMode = allowanceMode || PERMISSION_ALLOWANCE_MODES.FULL_ACCESS;
+    /**
+     * Server-side confirmation tokens store
+     * @type {Map<string, { extensionId: string, toolName: string, payloadHash: string, expiresAt: number }>}
+     */
+    this._confirmationTokens = new Map();
 
     if (initialGrants && typeof initialGrants === 'object') {
       for (const [id, perms] of Object.entries(initialGrants)) {
@@ -71,6 +135,60 @@ export class PermissionManager {
         }
       }
     }
+  }
+
+  /**
+   * Create a cryptographically secure, single-use server confirmation token.
+   *
+   * @param {string} extensionId
+   * @param {string} toolName
+   * @param {Record<string, any>} [args]
+   * @param {number} [ttlMs=300000] 5 minutes default
+   * @returns {string}
+   */
+  createConfirmationToken(extensionId, toolName, args = {}, ttlMs = 300000) {
+    const now = Date.now();
+    for (const [t, data] of this._confirmationTokens.entries()) {
+      if (data.expiresAt < now) this._confirmationTokens.delete(t);
+    }
+
+    const token = crypto.randomBytes(24).toString('hex');
+    const payloadHash = hashToolPayload(toolName, args);
+    this._confirmationTokens.set(token, {
+      extensionId,
+      toolName,
+      payloadHash,
+      expiresAt: now + ttlMs,
+    });
+    return token;
+  }
+
+  /**
+   * Validate and consume a server confirmation token (single-use).
+   *
+   * @param {string} token
+   * @param {string} extensionId
+   * @param {string} toolName
+   * @param {Record<string, any>} [args]
+   * @returns {boolean}
+   */
+  validateAndConsumeConfirmationToken(token, extensionId, toolName, args = {}) {
+    if (!token || typeof token !== 'string') return false;
+    const data = this._confirmationTokens.get(token);
+    if (!data) return false;
+
+    if (data.expiresAt < Date.now()) {
+      this._confirmationTokens.delete(token);
+      return false;
+    }
+
+    const payloadHash = hashToolPayload(toolName, args);
+    if (data.toolName !== toolName || data.payloadHash !== payloadHash) {
+      return false;
+    }
+
+    this._confirmationTokens.delete(token);
+    return true;
   }
 
   /**
@@ -200,6 +318,24 @@ export class PermissionManager {
       }
     }
 
+    const tokenCandidate =
+      (typeof context === 'object' && context !== null ? context.confirmationToken : null) ||
+      args?.__confirmationToken ||
+      args?.confirmationToken ||
+      (typeof context === 'string' ? context : null);
+
+    const hasValidToken = Boolean(
+      tokenCandidate &&
+      this.validateAndConsumeConfirmationToken(tokenCandidate, extensionId, toolName, args)
+    );
+
+    // If context explicitly flags that client confirmation token is required (e.g. from apiRouter / untrusted client),
+    // then args.__confirmed is NOT accepted.
+    // Otherwise, for backward compatibility with direct programmatic calls, args.__confirmed is accepted.
+    const hasLegacyConfirmation = Boolean(args?.__confirmed && !context?.requireTokenOnly && !context?.isClientRequest);
+
+    const hasValidConfirmation = hasValidToken || hasLegacyConfirmation;
+
     // ── Mode-specific enforcement: STRICT ──────────────────────────────────
     if (this.allowanceMode === PERMISSION_ALLOWANCE_MODES.STRICT) {
       // In strict mode, state-modifying tools require explicit confirmation
@@ -211,10 +347,12 @@ export class PermissionManager {
         toolName === 'delete_item' ||
         toolName === 'write_file';
 
-      if (isStateModifying && !args.__confirmed) {
+      if (isStateModifying && !hasValidConfirmation) {
+        const confirmationToken = this.createConfirmationToken(extensionId, toolName, args);
         return {
           allowed: false,
           requiresConfirmation: true,
+          confirmationToken,
           reason: `Strict Mode: Tool "${toolName}" requires explicit user confirmation before executing.`,
         };
       }
@@ -222,7 +360,7 @@ export class PermissionManager {
 
     // ── Mode-specific enforcement: SANDBOX ─────────────────────────────────
     if (this.allowanceMode === PERMISSION_ALLOWANCE_MODES.SANDBOX) {
-      const workspaceRoot = (context?.workspaceRoot || process.cwd()).toLowerCase();
+      const workspaceRoot = context?.workspaceRoot || process.cwd();
 
       // Restrict terminal execution in sandbox
       if (permissions.includes(KNOWN_PERMISSIONS.TERMINAL) || toolName.includes('terminal')) {
@@ -237,8 +375,7 @@ export class PermissionManager {
         }
 
         if (args.cwd) {
-          const targetCwd = String(args.cwd).toLowerCase();
-          if (!targetCwd.startsWith(workspaceRoot)) {
+          if (!isPathInsideWorkspace(args.cwd, workspaceRoot)) {
             return {
               allowed: false,
               reason: `Sandbox Mode: Command working directory must be within active workspace root "${workspaceRoot}".`,
@@ -260,8 +397,7 @@ export class PermissionManager {
 
       // Restrict File Explorer path navigation in sandbox
       if (toolName === 'windows_file_explorer' && args.path) {
-        const targetPath = String(args.path).toLowerCase();
-        if (!targetPath.startsWith(workspaceRoot)) {
+        if (!isPathInsideWorkspace(args.path, workspaceRoot)) {
           return {
             allowed: false,
             reason: `Sandbox Mode: File Explorer navigation restricted to active workspace "${workspaceRoot}".`,
@@ -271,10 +407,12 @@ export class PermissionManager {
     }
 
     // Check extension-specific confirmation policy
-    if (extensionConfig.requireConfirmation === true && !args.__confirmed) {
+    if (extensionConfig.requireConfirmation === true && !hasValidConfirmation) {
+      const confirmationToken = this.createConfirmationToken(extensionId, toolName, args);
       return {
         allowed: false,
         requiresConfirmation: true,
+        confirmationToken,
         reason: `Command requires explicit user confirmation per extension policy.`,
       };
     }

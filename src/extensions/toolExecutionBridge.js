@@ -140,6 +140,7 @@ export class ToolExecutionBridge {
           ok: false,
           error: permCheck.reason || 'Permission denied',
           requiresConfirmation: Boolean(permCheck.requiresConfirmation),
+          confirmationToken: permCheck.confirmationToken,
           executionTimeMs: Date.now() - startTime,
         };
       }

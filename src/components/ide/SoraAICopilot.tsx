@@ -33,7 +33,7 @@ import {
   getSettings,
 } from '../../services/chatService';
 import { executeExtensionTool, fetchExtensionTools } from '../../services/extensionService';
-import { parseToolCallFromText, stripToolCallsFromText, sanitizeContentForModel } from '../../utils/toolParser';
+import { parseToolCallFromText, stripToolCallsFromText } from '../../utils/toolParser';
 import { OpenTab } from './types';
 
 export interface AgentToolCall {

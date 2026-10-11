@@ -52,6 +52,17 @@ export function validateManifest(manifest) {
   // Required field: entry
   if (typeof manifest.entry !== 'string' || !manifest.entry.trim()) {
     errors.push('Manifest "entry" is required and must specify the entrypoint file (e.g. "index.js")');
+  } else {
+    const cleanEntry = manifest.entry.trim();
+    if (
+      /^[/\\]/.test(cleanEntry) ||
+      /^[a-zA-Z]:/.test(cleanEntry) ||
+      cleanEntry.includes('..') ||
+      cleanEntry.startsWith('\\\\') ||
+      cleanEntry.startsWith('//')
+    ) {
+      errors.push('Manifest "entry" must be a relative file path within the extension directory without path traversal');
+    }
   }
 
   // Permissions validation

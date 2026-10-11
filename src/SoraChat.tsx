@@ -1079,7 +1079,6 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
           const finalDuration = Math.round((Date.now() - startTime) / 100) / 10;
 
           // Strip any raw tool call text from the displayed bubble immediately
-          const strippedDisplay = stripToolCallsFromText(accumulatedContent);
           setMessages((prev) => {
             const updated = [...prev];
             const lastIdx = updated.length - 1;

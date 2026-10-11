@@ -41,6 +41,13 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
+    server: {
+      host: process.env.VITE_HOST || '127.0.0.1',
+      strictPort: false,
+    },
+    preview: {
+      host: process.env.VITE_HOST || '127.0.0.1',
+    },
     plugins: [
       react(),
       tailwindcss(),

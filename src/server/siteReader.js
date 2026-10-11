@@ -1,10 +1,141 @@
+import dns from 'node:dns/promises';
+import net from 'node:net';
+
 /**
- * Site Reader Service — fetches real website URLs and extracts clean, readable text & markdown.
- * Strips ads, scripts, navigation, and boilerplate to provide high-quality grounding for LLM.
- * Features a dual-engine architecture:
- *   1. Direct high-speed HTML parser & reader
- *   2. Free AI Reader fallback (r.jina.ai) for Cloudflare / JS-rendered sites
+ * Determine if an IP address is private, loopback, link-local, carrier-grade NAT, or cloud metadata.
+ * @param {string} ip
+ * @returns {boolean} True if prohibited
  */
+export function isPrivateOrRestrictedIP(ip) {
+  if (!ip || typeof ip !== 'string') return true;
+
+  // Normalize IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1)
+  if (ip.startsWith('::ffff:')) {
+    ip = ip.slice(7);
+  }
+
+  const isIPv4 = net.isIPv4(ip);
+  const isIPv6 = net.isIPv6(ip);
+
+  if (!isIPv4 && !isIPv6) {
+    return true; // Malformed IP
+  }
+
+  if (isIPv4) {
+    const parts = ip.split('.').map(Number);
+    if (parts.length !== 4 || parts.some(p => isNaN(p) || p < 0 || p > 255)) {
+      return true;
+    }
+    const [b0, b1] = parts;
+
+    // 0.0.0.0/8 (Current network)
+    if (b0 === 0) return true;
+    // 127.0.0.0/8 (Loopback)
+    if (b0 === 127) return true;
+    // 10.0.0.0/8 (RFC 1918 Private)
+    if (b0 === 10) return true;
+    // 172.16.0.0/12 (RFC 1918 Private: 172.16.0.0 - 172.31.255.255)
+    if (b0 === 172 && b1 >= 16 && b1 <= 31) return true;
+    // 192.168.0.0/16 (RFC 1918 Private)
+    if (b0 === 192 && b1 === 168) return true;
+    // 169.254.0.0/16 (Link-local & AWS/Azure/GCP Cloud Metadata 169.254.169.254)
+    if (b0 === 169 && b1 === 254) return true;
+    // 100.64.0.0/10 (Carrier-grade NAT: 100.64.0.0 - 100.127.255.255)
+    if (b0 === 100 && b1 >= 64 && b1 <= 127) return true;
+    // 192.0.0.0/24, 192.0.2.0/24 (Documentation/TEST-NET-1)
+    if (b0 === 192 && b1 === 0) return true;
+    // 198.51.100.0/24 (TEST-NET-2)
+    if (b0 === 198 && b1 === 51) return true;
+    // 203.0.113.0/24 (TEST-NET-3)
+    if (b0 === 203 && b1 === 0) return true;
+    // 224.0.0.0/4 (Multicast / Class E reserved)
+    if (b0 >= 224) return true;
+
+    return false;
+  }
+
+  if (isIPv6) {
+    const lower = ip.toLowerCase();
+    // ::1 (Loopback) or :: (Unspecified)
+    if (lower === '::1' || lower === '::' || lower === '0:0:0:0:0:0:0:1' || lower === '0:0:0:0:0:0:0:0') {
+      return true;
+    }
+    // fc00::/7 (Unique local addresses)
+    if (lower.startsWith('fc') || lower.startsWith('fd')) {
+      return true;
+    }
+    // fe80::/10 (Link-local)
+    if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) {
+      return true;
+    }
+    // ff00::/8 (Multicast)
+    if (lower.startsWith('ff')) {
+      return true;
+    }
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Validate URL and ensure it does not resolve to local/private/cloud metadata addresses.
+ * Resolves DNS to check actual destination IP.
+ * @param {string|URL} urlInput
+ * @returns {Promise<URL>} Validated URL
+ */
+export async function assertSafeUrl(urlInput) {
+  let parsed;
+  try {
+    parsed = typeof urlInput === 'string' ? new URL(urlInput) : urlInput;
+  } catch (err) {
+    throw new Error('Invalid URL format: ' + err.message);
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('Prohibited protocol: Only HTTP/HTTPS URLs are supported.');
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+
+  // Known prohibited hostnames
+  if (
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    hostname === 'metadata.google.internal' ||
+    hostname === 'instance-data'
+  ) {
+    throw new Error(`SSRF blocked: Prohibited destination hostname "${hostname}".`);
+  }
+
+  // If hostname is directly an IP address
+  if (net.isIP(hostname)) {
+    if (isPrivateOrRestrictedIP(hostname)) {
+      throw new Error(`SSRF blocked: Prohibited destination IP "${hostname}".`);
+    }
+    return parsed;
+  }
+
+  // Resolve hostname via DNS
+  let records;
+  try {
+    records = await dns.lookup(hostname, { all: true });
+  } catch (dnsErr) {
+    throw new Error(`DNS lookup failed for "${hostname}": ${dnsErr.message}`);
+  }
+
+  if (!records || records.length === 0) {
+    throw new Error(`DNS resolution returned no addresses for "${hostname}".`);
+  }
+
+  for (const record of records) {
+    if (isPrivateOrRestrictedIP(record.address)) {
+      throw new Error(`SSRF blocked: Hostname "${hostname}" resolves to prohibited address "${record.address}".`);
+    }
+  }
+
+  return parsed;
+}
 
 /**
  * Clean and extract readable text and structure from raw HTML.
@@ -151,10 +282,7 @@ export async function readSiteContent(url, options = {}) {
 
   let validUrl;
   try {
-    validUrl = new URL(url);
-    if (!['http:', 'https:'].includes(validUrl.protocol)) {
-      throw new Error('Only HTTP/HTTPS URLs are supported.');
-    }
+    validUrl = await assertSafeUrl(url);
   } catch (err) {
     return {
       url,
@@ -165,32 +293,59 @@ export async function readSiteContent(url, options = {}) {
       preview: '',
       wordCount: 0,
       readSuccess: false,
-      error: `Invalid URL format: ${err.message}`,
+      error: `SSRF protection: ${err.message}`,
     };
   }
 
   const hostname = validUrl.hostname.replace(/^www\./, '');
+  let ssrfBlocked = false;
+  let ssrfError = '';
 
   // ── Engine 1: Direct High-Speed Fetch ────────────────────────────────────
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    const res = await fetch(validUrl.toString(), {
-      signal: controller.signal,
-      redirect: 'follow',
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (Sora AI Web Reader)',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache',
-      },
-    });
+    let currentUrl = validUrl;
+    let redirectCount = 0;
+    const MAX_REDIRECTS = 5;
+    let res = null;
 
-    clearTimeout(timer);
+    try {
+      while (redirectCount <= MAX_REDIRECTS) {
+        currentUrl = await assertSafeUrl(currentUrl);
+        res = await fetch(currentUrl.toString(), {
+          signal: controller.signal,
+          redirect: 'manual',
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (Sora AI Web Reader)',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Cache-Control': 'no-cache',
+          },
+        });
 
-    if (res.ok) {
+        if ([301, 302, 303, 307, 308].includes(res.status)) {
+          const location = res.headers.get('location');
+          if (!location) break;
+
+          redirectCount++;
+          if (redirectCount > MAX_REDIRECTS) {
+            throw new Error('Too many redirects (exceeded limit of 5)');
+          }
+
+          const nextUrl = new URL(location, currentUrl);
+          currentUrl = await assertSafeUrl(nextUrl);
+          continue;
+        }
+        break;
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (res && res.ok) {
       const contentType = res.headers.get('content-type') || '';
       if (contentType.includes('text/html') || contentType.includes('text/plain') || contentType.includes('application/xhtml+xml')) {
         const rawText = await res.text();
@@ -211,7 +366,25 @@ export async function readSiteContent(url, options = {}) {
       }
     }
   } catch (err) {
-    // If direct fetch aborted or failed, proceed to Engine 2
+    if (err.message && err.message.includes('SSRF blocked')) {
+      ssrfBlocked = true;
+      ssrfError = err.message;
+    }
+  }
+
+  // If redirect or destination was blocked by SSRF, do NOT proceed to proxy engine
+  if (ssrfBlocked) {
+    return {
+      url,
+      title: '',
+      siteName: '',
+      description: '',
+      content: '',
+      preview: '',
+      wordCount: 0,
+      readSuccess: false,
+      error: `SSRF protection: ${ssrfError}`,
+    };
   }
 
   // ── Engine 2: AI Reader Proxy (r.jina.ai) Fallback ──────────────────────

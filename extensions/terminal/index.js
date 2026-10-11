@@ -20,7 +20,8 @@ export async function terminal_execute(args, context = {}) {
   // If configured or requested to run in a visible Command Prompt window
   if (shouldOpenInWindow) {
     return new Promise((resolve) => {
-      const winCmd = `start "SORA Command Prompt" cmd.exe /k "cd /d "${effectiveCwd}" && ${command}"`;
+      const safeCwd = effectiveCwd.replace(/"/g, '');
+      const winCmd = `start "SORA Command Prompt" /D "${safeCwd}" cmd.exe /k "${command.replace(/"/g, '""')}"`;
       exec(winCmd, { windowsHide: false }, (err) => {
         if (err) {
           resolve({

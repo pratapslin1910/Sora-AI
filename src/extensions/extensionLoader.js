@@ -27,14 +27,26 @@ export class ExtensionLoader {
    */
   async loadExtension(extensionDir, manifest) {
     const entryFile = manifest.entry || 'index.js';
-    const entryPath = path.resolve(extensionDir, entryFile);
+    const canonicalDir = fs.existsSync(extensionDir) ? fs.realpathSync(extensionDir) : path.resolve(extensionDir);
+    const entryPath = path.resolve(canonicalDir, entryFile);
+
+    const rel = path.relative(canonicalDir, entryPath);
+    if (rel === '..' || rel.startsWith('..' + path.sep) || rel.startsWith('../') || path.isAbsolute(rel)) {
+      throw new Error(`Extension entry file "${entryFile}" escapes extension directory: "${extensionDir}".`);
+    }
 
     if (!fs.existsSync(entryPath)) {
       throw new Error(`Extension entry file not found: ${entryPath}`);
     }
 
+    const realEntryPath = fs.realpathSync(entryPath);
+    const realRel = path.relative(canonicalDir, realEntryPath);
+    if (realRel === '..' || realRel.startsWith('..' + path.sep) || realRel.startsWith('../') || path.isAbsolute(realRel)) {
+      throw new Error(`Extension entry file symlink target escapes extension directory.`);
+    }
+
     // Dynamic import using file URL with timestamp cache-buster for reloading
-    const fileUrl = `${pathToFileURL(entryPath).href}?t=${Date.now()}`;
+    const fileUrl = `${pathToFileURL(realEntryPath).href}?t=${Date.now()}`;
 
     let mod;
     try {

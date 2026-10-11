@@ -111,12 +111,21 @@ export class FreeLLMAPIProvider {
    */
   async getModels() {
     try {
-      const res = await fetch(`${this.baseUrl}/models`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-        },
-      });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), Math.min(this.timeoutMs, 10000));
+
+      let res;
+      try {
+        res = await fetch(`${this.baseUrl}/models`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${this.apiKey}`,
+          },
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
 
       if (!res.ok) {
         const text = await res.text();

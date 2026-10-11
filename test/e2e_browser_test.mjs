@@ -3,9 +3,37 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 
+function findChrome() {
+  const envBin = process.env.CHROME_BIN || process.env.CHROME_PATH;
+  if (envBin && fs.existsSync(envBin)) return envBin;
+
+  const candidates = [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe'),
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    path.join(process.env.LOCALAPPDATA || '', 'Microsoft\\Edge\\Application\\msedge.exe'),
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  ];
+
+  for (const c of candidates) {
+    if (c && fs.existsSync(c)) return c;
+  }
+  return null;
+}
+
 async function testHeadlessChrome() {
+  const chromePath = findChrome();
+  if (!chromePath) {
+    console.log('[E2E TEST] No Chrome or Edge executable found. Skipping browser test gracefully.');
+    return;
+  }
+
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-test-'));
-  const chromePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
   const chromeProc = spawn(chromePath, [
     '--headless=new',
@@ -103,8 +131,9 @@ async function testHeadlessChrome() {
     onSessionEvent('Page.loadEventFired', resolve);
   });
 
-  console.log('Navigating to http://localhost:5174/ ...');
-  await sendSessionCommand('Page.navigate', { url: 'http://localhost:5174/' });
+  const appUrl = process.env.APP_URL || process.env.VITE_URL || 'http://127.0.0.1:5173/';
+  console.log(`Navigating to ${appUrl} ...`);
+  await sendSessionCommand('Page.navigate', { url: appUrl });
   await loadedPromise;
   console.log('Page load event fired!');
 
