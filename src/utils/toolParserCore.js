@@ -92,14 +92,21 @@ export function parseToolCallsFromText(text) {
   const dotsRegex = /<(?:dots_function_call|function_calls)\b[^>]*>([\s\S]*?)(?:<\/(?:dots_function_call|function_calls)\s*>|$)/gi;
   let dots;
   while ((dots = dotsRegex.exec(text)) !== null) candidates.push(...parseInvokeBlock(dots[0]));
-  candidates.push(...parseJsonToolCalls(text));
-  const seen = new Set();
-  return candidates.filter((call) => {
+  // Do not scan JSON embedded inside XML parameter values as separate tool calls.
+  const jsonSource = text.replace(/<(?:dots_function_call|function_calls)\b[^>]*>[\s\S]*?<\/(?:dots_function_call|function_calls)\s*>/gi, '');
+  candidates.push(...parseJsonToolCalls(jsonSource));
+
+  // Collapse adjacent identical invocations (common provider duplication) while allowing
+  // the same tool+args again later after another action when a workflow genuinely needs it.
+  const deduplicated = [];
+  let previousKey = null;
+  for (const call of candidates) {
     const key = JSON.stringify([call.tool, canonicalize(call.args || {})]);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+    if (key === previousKey) continue;
+    deduplicated.push(call);
+    previousKey = key;
+  }
+  return deduplicated;
 }
 export function parseToolCallFromText(text) {
   return parseToolCallsFromText(text)[0] || null;
