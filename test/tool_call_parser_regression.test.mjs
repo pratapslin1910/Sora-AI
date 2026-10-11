@@ -49,6 +49,6 @@ describe('Tool-call protocol regression coverage', () => {
 
   it('hides an incomplete streamed tool block instead of leaking raw markup', () => {
     assert.equal(stripToolCallsFromText('Answer so far <dots_function_call><invoke name="read_file">'), 'Answer so far');
-    assert.equal(stripToolCallsFromText('<invoke name="read_file"><parameter name="path">README.md</parameter>'), 'README.md');
+    assert.equal(stripToolCallsFromText('<invoke name="read_file"><parameter name="path">README.md</parameter>'), '');
   });
 });
