@@ -1,5 +1,126 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import http from 'node:http';
+import https from 'node:https';
+
+function ipv6ToBigInt(input) {
+  let value = String(input).toLowerCase().split('%')[0];
+  if (value.includes('.')) {
+    const lastColon = value.lastIndexOf(':');
+    const octets = value.slice(lastColon + 1).split('.').map(Number);
+    if (octets.length !== 4 || octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+    const high = ((octets[0] << 8) | octets[1]).toString(16);
+    const low = ((octets[2] << 8) | octets[3]).toString(16);
+    value = value.slice(0, lastColon + 1) + high + ':' + low;
+  }
+  const hasCompression = value.includes('::');
+  const [leftText, rightText = ''] = value.split('::');
+  const left = leftText ? leftText.split(':') : [];
+  const right = rightText ? rightText.split(':') : [];
+  const missing = 8 - left.length - right.length;
+  if ((hasCompression && missing < 1) || (!hasCompression && missing !== 0)) return null;
+  const parts = hasCompression ? [...left, ...Array(missing).fill('0'), ...right] : left;
+  if (parts.length !== 8 || parts.some((part) => !/^[0-9a-f]{1,4}$/.test(part))) return null;
+  return parts.reduce((result, part) => (result << 16n) | BigInt(parseInt(part, 16)), 0n);
+}
+
+function bigIntToIPv4(value) {
+  return [24n, 16n, 8n, 0n].map((shift) => Number((value >> shift) & 255n)).join('.');
+}
+
+async function resolveSafeTarget(urlInput) {
+  let parsed;
+  try {
+    parsed = typeof urlInput === 'string' ? new URL(urlInput) : new URL(urlInput.toString());
+  } catch (err) {
+    throw new Error('Invalid URL format: ' + err.message);
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('Prohibited protocol: Only HTTP/HTTPS URLs are supported.');
+  }
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '').split('%')[0];
+  if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost') ||
+      hostname === 'metadata.google.internal' || hostname === 'instance-data') {
+    throw new Error(`SSRF blocked: Prohibited destination hostname "${hostname}".`);
+  }
+
+  let records;
+  const ipFamily = net.isIP(hostname);
+  if (ipFamily) {
+    records = [{ address: hostname, family: ipFamily }];
+  } else {
+    try {
+      records = await dns.lookup(hostname, { all: true, verbatim: true });
+    } catch (err) {
+      throw new Error(`DNS lookup failed for "${hostname}": ${err.message}`);
+    }
+  }
+  if (!records?.length) throw new Error(`DNS resolution returned no addresses for "${hostname}".`);
+  for (const record of records) {
+    if (isPrivateOrRestrictedIP(record.address)) {
+      throw new Error(`SSRF blocked: Hostname "${hostname}" resolves to prohibited address "${record.address}".`);
+    }
+  }
+  return { parsed, hostname, target: records[0] };
+}
+
+/**
+ * Fetch HTTP(S) while pinning the connection to the IP address validated here.
+ * The URL hostname remains the HTTP Host/TLS verification name; DNS is not
+ * resolved a second time by the socket, eliminating the validation/fetch TOCTOU.
+ */
+export async function safeFetch(urlInput, options = {}) {
+  const { parsed, hostname, target } = await resolveSafeTarget(urlInput);
+  const transport = parsed.protocol === 'https:' ? https : http;
+  const maxBytes = Number.isFinite(options.maxBytes) ? Math.max(1024, options.maxBytes) : 5 * 1024 * 1024;
+  const requestOptions = {
+    protocol: parsed.protocol,
+    hostname,
+    port: parsed.port || undefined,
+    path: `${parsed.pathname}${parsed.search}`,
+    method: options.method || 'GET',
+    headers: { ...(options.headers || {}), host: parsed.host },
+    signal: options.signal,
+    servername: net.isIP(hostname) ? undefined : hostname,
+    lookup: (_host, lookupOptions, callback) => {
+      if (lookupOptions?.all) callback(null, [{ address: target.address, family: target.family }]);
+      else callback(null, target.address, target.family);
+    },
+  };
+  return new Promise((resolve, reject) => {
+    const request = transport.request(requestOptions, (response) => {
+      const chunks = [];
+      let totalBytes = 0;
+      response.on('data', (chunk) => {
+        totalBytes += chunk.length;
+        if (totalBytes > maxBytes) {
+          request.destroy(new Error(`Response exceeded maximum allowed size of ${maxBytes} bytes.`));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('error', reject);
+      response.on('end', () => {
+        const headers = {
+          get(name) {
+            const value = response.headers[String(name).toLowerCase()];
+            return Array.isArray(value) ? value.join(', ') : value ?? null;
+          },
+        };
+        const body = Buffer.concat(chunks);
+        resolve({
+          ok: response.statusCode >= 200 && response.statusCode < 300,
+          status: response.statusCode,
+          statusText: response.statusMessage || '',
+          headers,
+          text: async () => body.toString('utf8'),
+        });
+      });
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
 
 /**
  * Determine if an IP address is private, loopback, link-local, carrier-grade NAT, or cloud metadata.
@@ -55,23 +176,39 @@ export function isPrivateOrRestrictedIP(ip) {
   }
 
   if (isIPv6) {
-    const lower = ip.toLowerCase();
-    // ::1 (Loopback) or :: (Unspecified)
-    if (lower === '::1' || lower === '::' || lower === '0:0:0:0:0:0:0:1' || lower === '0:0:0:0:0:0:0:0') {
-      return true;
+    const address = ipv6ToBigInt(ip);
+    if (address === null) return true;
+
+    // ::/128 and ::1/128
+    if (address === 0n || address === 1n) return true;
+
+    // IPv4-mapped IPv6 (::ffff:0:0/96) and deprecated IPv4-compatible ::/96.
+    const high96 = address >> 32n;
+    if (high96 === 0xffffn) {
+      return isPrivateOrRestrictedIP(bigIntToIPv4(address & 0xffffffffn));
     }
-    // fc00::/7 (Unique local addresses)
-    if (lower.startsWith('fc') || lower.startsWith('fd')) {
-      return true;
+    if (high96 === 0n) return true;
+
+    // 6to4 (2002::/16) and Teredo (2001:0000::/32) can carry embedded IPv4
+    // addresses, so inspect those addresses rather than trusting the IPv6 prefix.
+    if ((address >> 112n) === 0x2002n) {
+      const embeddedV4 = (address >> 80n) & 0xffffffffn;
+      return isPrivateOrRestrictedIP(bigIntToIPv4(embeddedV4));
     }
-    // fe80::/10 (Link-local)
-    if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) {
-      return true;
+    if ((address >> 96n) === 0x20010000n) {
+      const teredoServer = (address >> 64n) & 0xffffffffn;
+      const obfuscatedClient = (~address) & 0xffffffffn;
+      return isPrivateOrRestrictedIP(bigIntToIPv4(teredoServer)) ||
+        isPrivateOrRestrictedIP(bigIntToIPv4(obfuscatedClient));
     }
-    // ff00::/8 (Multicast)
-    if (lower.startsWith('ff')) {
-      return true;
-    }
+
+    // IPv6 documentation prefix is not a routable public destination.
+    if ((address >> 32n) >= 0x20010db8n && (address >> 32n) <= 0x20010dbbn) return true;
+
+    // fc00::/7 (Unique local), fe80::/10 (link-local), ff00::/8 (multicast).
+    if ((address >> 121n) === 0x7en) return true;
+    if ((address >> 118n) === 0x3fan) return true;
+    if ((address >> 120n) === 0xffn) return true;
     return false;
   }
 
@@ -85,55 +222,7 @@ export function isPrivateOrRestrictedIP(ip) {
  * @returns {Promise<URL>} Validated URL
  */
 export async function assertSafeUrl(urlInput) {
-  let parsed;
-  try {
-    parsed = typeof urlInput === 'string' ? new URL(urlInput) : urlInput;
-  } catch (err) {
-    throw new Error('Invalid URL format: ' + err.message);
-  }
-
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new Error('Prohibited protocol: Only HTTP/HTTPS URLs are supported.');
-  }
-
-  const hostname = parsed.hostname.toLowerCase();
-
-  // Known prohibited hostnames
-  if (
-    hostname === 'localhost' ||
-    hostname.endsWith('.localhost') ||
-    hostname === 'metadata.google.internal' ||
-    hostname === 'instance-data'
-  ) {
-    throw new Error(`SSRF blocked: Prohibited destination hostname "${hostname}".`);
-  }
-
-  // If hostname is directly an IP address
-  if (net.isIP(hostname)) {
-    if (isPrivateOrRestrictedIP(hostname)) {
-      throw new Error(`SSRF blocked: Prohibited destination IP "${hostname}".`);
-    }
-    return parsed;
-  }
-
-  // Resolve hostname via DNS
-  let records;
-  try {
-    records = await dns.lookup(hostname, { all: true });
-  } catch (dnsErr) {
-    throw new Error(`DNS lookup failed for "${hostname}": ${dnsErr.message}`);
-  }
-
-  if (!records || records.length === 0) {
-    throw new Error(`DNS resolution returned no addresses for "${hostname}".`);
-  }
-
-  for (const record of records) {
-    if (isPrivateOrRestrictedIP(record.address)) {
-      throw new Error(`SSRF blocked: Hostname "${hostname}" resolves to prohibited address "${record.address}".`);
-    }
-  }
-
+  const { parsed } = await resolveSafeTarget(urlInput);
   return parsed;
 }
 
@@ -314,7 +403,7 @@ export async function readSiteContent(url, options = {}) {
     try {
       while (redirectCount <= MAX_REDIRECTS) {
         currentUrl = await assertSafeUrl(currentUrl);
-        res = await fetch(currentUrl.toString(), {
+        res = await safeFetch(currentUrl.toString(), {
           signal: controller.signal,
           redirect: 'manual',
           headers: {

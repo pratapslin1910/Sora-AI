@@ -5,7 +5,7 @@
 import { exec, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { assertSafeUrl } from '../../src/server/siteReader.js';
+import { safeFetch } from '../../src/server/siteReader.js';
 
 function findChromePath(customPath) {
   if (customPath && fs.existsSync(customPath)) {
@@ -221,13 +221,12 @@ export async function chrome_interact_page(args) {
   const targetUrl = normalizeUrl(url);
 
   try {
-    await assertSafeUrl(targetUrl);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 12000);
 
     let res;
     try {
-      res = await fetch(targetUrl, {
+      res = await safeFetch(targetUrl, {
       redirect: 'manual',
       signal: controller.signal,
       headers: {
