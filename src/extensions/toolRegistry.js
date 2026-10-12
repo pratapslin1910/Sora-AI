@@ -30,6 +30,10 @@ export class ToolRegistry {
     }
 
     const toolName = toolDef.name.trim();
+    const existing = this._tools.get(toolName);
+    if (existing && existing.extensionId !== extensionId) {
+      throw new Error(`Tool "${toolName}" is already registered by extension "${existing.extensionId}" and cannot be shadowed by "${extensionId}".`);
+    }
     this._tools.set(toolName, {
       extensionId,
       toolDef: {

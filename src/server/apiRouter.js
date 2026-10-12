@@ -525,9 +525,7 @@ export async function handleApiRequest(req, res, customProvider) {
   if (req.method === 'GET' && pathname === '/api/settings') {
     const saved = loadSettings();
     // Never expose the full API key — return masked version
-    const maskedKey = saved.apiKey
-      ? saved.apiKey.slice(0, 8) + '•'.repeat(Math.max(0, saved.apiKey.length - 8))
-      : '';
+    const maskedKey = saved.apiKey ? '•'.repeat(saved.apiKey.length) : '';
     jsonResponse(res, 200, {
       ok: true,
       baseUrl: saved.baseUrl || DEFAULT_BASE_URL,
@@ -1006,7 +1004,8 @@ export async function handleApiRequest(req, res, customProvider) {
     }
 
     try {
-      const saved = saveMemory(body);
+      // Ignore caller-provided IDs so a POST cannot overwrite seeded/system memories.
+      const saved = saveMemory({ ...body, id: undefined, source: 'manual' });
       jsonResponse(res, 200, { ok: true, memory: saved });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: String(err.message) });
@@ -1210,11 +1209,16 @@ export async function handleApiRequest(req, res, customProvider) {
     try {
       const body = await parseJsonBody(req);
       const { path: relPath, content } = body;
-      if (!relPath) {
+      if (typeof relPath !== 'string' || !relPath.trim()) {
         jsonResponse(res, 400, { ok: false, error: 'Path is required' });
         return true;
       }
-      const targetFile = resolveSafePath(relPath);
+      if (typeof content !== 'string') {
+        jsonResponse(res, 400, { ok: false, error: 'Content must be a string' });
+        return true;
+      }
+      const requestWorkspaceRoot = activeWorkspaceRoot;
+      const targetFile = resolveSafePath(relPath, requestWorkspaceRoot);
       const parentDir = path.dirname(targetFile);
       if (!fs.existsSync(parentDir)) {
         fs.mkdirSync(parentDir, { recursive: true });
@@ -1330,16 +1334,21 @@ export async function handleApiRequest(req, res, customProvider) {
     return true;
   }
 
-  // POST /api/ide/exec
+  // POST /api/ide/exec — direct shell access requires a trusted local browser origin.
   if (req.method === 'POST' && pathname === '/api/ide/exec') {
+    if (!origin || !isAllowedOrigin(origin)) {
+      jsonResponse(res, 403, { ok: false, error: 'Forbidden: terminal execution requires a trusted local Origin.' });
+      return true;
+    }
     try {
       const body = await parseJsonBody(req);
       const { command, cwd: customCwd } = body;
-      if (!command) {
-        jsonResponse(res, 400, { ok: false, error: 'Command is required' });
+      if (typeof command !== 'string' || !command.trim()) {
+        jsonResponse(res, 400, { ok: false, error: 'Command must be a non-empty string' });
         return true;
       }
-      const runCwd = customCwd ? resolveSafePath(customCwd) : activeWorkspaceRoot;
+      const requestWorkspaceRoot = activeWorkspaceRoot;
+      const runCwd = customCwd ? resolveSafePath(customCwd, requestWorkspaceRoot) : requestWorkspaceRoot;
 
       // Essential safeguard: Block catastrophic disk/root wiping operations
       const lowerCmd = command.toLowerCase().trim();

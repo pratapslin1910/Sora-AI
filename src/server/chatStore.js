@@ -384,7 +384,8 @@ export async function searchChatExcerpts(
 
           // Extract code snippet if present in assistant response
           let codeSnippet = undefined;
-          const codeMatch = (nextMsg?.content || '').match(/```[a-z0-9_-]*\n([\s\S]*?)```/i);
+          const nextAssistantText = extractText(nextMsg?.content);
+          const codeMatch = nextAssistantText.match(/```[a-z0-9_-]*\n([\s\S]*?)```/i);
           if (codeMatch && codeMatch[0]) {
             codeSnippet = codeMatch[0];
           }
@@ -393,8 +394,8 @@ export async function searchChatExcerpts(
             chatId: chat.id,
             chatTitle: chat.title,
             date: chat.updated_at || chat.created_at,
-            userQuery: msg.content || '',
-            assistantExcerpt: nextMsg?.content || '',
+            userQuery: extractText(msg.content),
+            assistantExcerpt: extractText(nextMsg?.content),
             codeSnippet,
             score: bestTurnScore,
           };

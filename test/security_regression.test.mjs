@@ -468,10 +468,20 @@ describe('FIX 7 — Terminal exec: exit code and catastrophic command blocking',
     await new Promise((resolve) => server.close(resolve));
   });
 
-  it('successful command returns exitCode: 0 and ok: true', async () => {
+  it('rejects terminal execution when Origin is missing', async () => {
     const res = await fetch(`${baseUrl}/api/ide/exec`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'echo SHOULD_NOT_RUN' }),
+    });
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).ok, false);
+  });
+
+  it('successful command returns exitCode: 0 and ok: true', async () => {
+    const res = await fetch(`${baseUrl}/api/ide/exec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1' },
       body: JSON.stringify({ command: 'echo hello' }),
     });
     const data = await res.json();
@@ -483,7 +493,7 @@ describe('FIX 7 — Terminal exec: exit code and catastrophic command blocking',
   it('exec always includes exitCode field', async () => {
     const res = await fetch(`${baseUrl}/api/ide/exec`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1' },
       body: JSON.stringify({ command: 'echo test' }),
     });
     const data = await res.json();
@@ -493,7 +503,7 @@ describe('FIX 7 — Terminal exec: exit code and catastrophic command blocking',
   it('catastrophic command is blocked with HTTP 403', async () => {
     const res = await fetch(`${baseUrl}/api/ide/exec`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1' },
       body: JSON.stringify({ command: 'format C:' }),
     });
     assert.equal(res.status, 403);

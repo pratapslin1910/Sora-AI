@@ -51,6 +51,13 @@ describe('Tool-call protocol regression coverage', () => {
     assert.deepEqual(parseToolCallFromText(response)?.args, { path: 'README.md' });
   });
 
+  it('does not execute tool-shaped JSON quoted in ordinary prose', () => {
+    assert.deepEqual(
+      parseToolCallsFromText('Example: {"tool":"delete_file","args":{"path":"important.txt"}}'),
+      []
+    );
+  });
+
   it('strips complete XML tool blocks while preserving surrounding prose', () => {
     const response = 'I will inspect the project. <dots_function_call><invoke name="read_file"><parameter name="path">package.json</parameter></invoke></dots_function_call> Done.';
     assert.equal(stripToolCallsFromText(response), 'I will inspect the project. Done.');

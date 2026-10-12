@@ -5,6 +5,7 @@
 import { exec } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { assertSafeUrl } from '../../src/server/siteReader.js';
 
 function findChromePath(customPath) {
   if (customPath && fs.existsSync(customPath)) {
@@ -198,16 +199,26 @@ export async function chrome_interact_page(args) {
   const targetUrl = normalizeUrl(url);
 
   try {
+    await assertSafeUrl(targetUrl);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 12000);
 
-    const res = await fetch(targetUrl, {
+    let res;
+    try {
+      res = await fetch(targetUrl, {
+      redirect: 'manual',
       signal: controller.signal,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       },
-    });
-    clearTimeout(timer);
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
+      return { ok: false, error: 'Redirect blocked by SSRF policy; validate the destination before fetching it.' };
+    }
 
     if (!res.ok) {
       return { ok: false, error: `HTTP ${res.status}: ${res.statusText} when fetching ${targetUrl}` };

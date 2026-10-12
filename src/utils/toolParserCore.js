@@ -67,18 +67,8 @@ function parseJsonToolCalls(text) {
       if (parsed && typeof parsed.tool === 'string' && parsed.tool.trim()) calls.push({ tool: parsed.tool.trim(), args: parsed.args && typeof parsed.args === 'object' ? parsed.args : {}, rawBlock: tag[0] });
     } catch { /* malformed candidate */ }
   }
-  if (calls.length === 0) {
-    let pos = 0;
-    while (pos < text.length) {
-      const balanced = extractBalancedJsonObject(text, pos);
-      if (!balanced) break;
-      try {
-        const parsed = JSON.parse(balanced.jsonString);
-        if (parsed && typeof parsed.tool === 'string' && parsed.tool.trim()) calls.push({ tool: parsed.tool.trim(), args: parsed.args && typeof parsed.args === 'object' ? parsed.args : {}, rawBlock: balanced.jsonString });
-      } catch { /* not a tool call */ }
-      pos = balanced.startIndex + 1;
-    }
-  }
+  // Only explicitly tagged <tool_call> JSON is executable. Quoted examples and
+  // untrusted prose containing tool-shaped JSON must never run as commands.
   return calls;
 }
 function canonicalize(value) {
