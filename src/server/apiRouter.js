@@ -713,9 +713,13 @@ export async function handleApiRequest(req, res, customProvider) {
     }
 
     const abortController = new AbortController();
-    req.on('close', () => {
-      abortController.abort();
-    });
+    const abortIfClientDisconnected = () => {
+      if (!res.writableEnded && !abortController.signal.aborted) {
+        abortController.abort(new Error('Client disconnected.'));
+      }
+    };
+    res.on('close', abortIfClientDisconnected);
+    res.on('error', abortIfClientDisconnected);
 
     if (stream) {
       res.writeHead(200, {
@@ -740,21 +744,31 @@ export async function handleApiRequest(req, res, customProvider) {
       }
 
       try {
+      const writeStreamEvent = async (payload) => {
+        if (res.destroyed || res.writableEnded || abortController.signal.aborted) return;
+        if (res.write(`data: ${JSON.stringify(payload)}\\n\\n`)) return;
+        await new Promise((resolve) => {
+          const cleanup = () => {
+            res.removeListener('drain', onDrain);
+            res.removeListener('close', onClose);
+            res.removeListener('error', onClose);
+          };
+          const onDrain = () => { cleanup(); resolve(); };
+          const onClose = () => { cleanup(); resolve(); };
+          res.once('drain', onDrain);
+          res.once('close', onClose);
+          res.once('error', onClose);
+          if (res.destroyed || res.writableEnded) onClose();
+        });
+      };
+
         await provider.streamChat({
           messages: messagesForModel,
           model,
           temperature,
           signal: abortController.signal,
-          onReasoning: (reasoning) => {
-            if (!res.writableEnded) {
-              res.write(`data: ${JSON.stringify({ reasoning })}\n\n`);
-            }
-          },
-          onToken: (token) => {
-            if (!res.writableEnded) {
-              res.write(`data: ${JSON.stringify({ token })}\n\n`);
-            }
-          },
+          onReasoning: (reasoning) => writeStreamEvent({ reasoning }),
+          onToken: (token) => writeStreamEvent({ token }),
           onDone: () => {
             if (!res.writableEnded) {
               res.write(`data: ${JSON.stringify({ done: true })}\n\n`);

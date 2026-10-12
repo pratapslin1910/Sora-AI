@@ -203,7 +203,7 @@ export function isPrivateOrRestrictedIP(ip) {
     }
 
     // IPv6 documentation prefix is not a routable public destination.
-    if ((address >> 32n) >= 0x20010db8n && (address >> 32n) <= 0x20010dbbn) return true;
+    if ((address >> 96n) === 0x20010db8n) return true;
 
     // fc00::/7 (Unique local), fe80::/10 (link-local), ff00::/8 (multicast).
     if ((address >> 121n) === 0x7en) return true;

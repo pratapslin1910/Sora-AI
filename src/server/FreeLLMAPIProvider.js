@@ -4,6 +4,21 @@
  * Encapsulates authentication, model discovery, error normalization, and streaming.
  */
 
+function createTimedRequestSignal(parentSignal, timeoutMs) {
+  const controller = new AbortController();
+  const abortFromParent = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) abortFromParent();
+  else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  const timer = setTimeout(() => controller.abort(new Error(`Request timed out after ${timeoutMs}ms`)), timeoutMs);
+  return {
+    signal: controller.signal,
+    cleanup() {
+      clearTimeout(timer);
+      parentSignal?.removeEventListener('abort', abortFromParent);
+    },
+  };
+}
+
 export class FreeLLMAPIProvider {
   /**
    * @param {Object} [config]
@@ -195,6 +210,7 @@ export class FreeLLMAPIProvider {
       payload.temperature = temperature;
     }
 
+    const timedRequest = createTimedRequestSignal(signal, this.timeoutMs);
     try {
       const res = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
@@ -203,7 +219,7 @@ export class FreeLLMAPIProvider {
           'Authorization': `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify(payload),
-        signal,
+        signal: timedRequest.signal,
       });
 
       if (!res.ok) {
@@ -232,6 +248,8 @@ export class FreeLLMAPIProvider {
       };
     } catch (err) {
       throw new Error(this.formatError(err));
+    } finally {
+      timedRequest.cleanup();
     }
   }
 
@@ -271,6 +289,58 @@ export class FreeLLMAPIProvider {
     }
 
     let fullText = '';
+    const timedRequest = createTimedRequestSignal(signal, this.timeoutMs);
+    let inlineReasoning = false;
+    let inlineBuffer = '';
+
+    const emitContent = (chunk) => {
+      inlineBuffer += chunk;
+      while (inlineBuffer.length) {
+        if (inlineReasoning) {
+          const closeIndex = inlineBuffer.toLowerCase().indexOf('</think>');
+          if (closeIndex >= 0) {
+            const reasoning = inlineBuffer.slice(0, closeIndex);
+            if (reasoning) onReasoning(reasoning);
+            inlineBuffer = inlineBuffer.slice(closeIndex + 8);
+            inlineReasoning = false;
+            continue;
+          }
+          const keep = '</think>'.length - 1;
+          if (inlineBuffer.length > keep) {
+            const reasoning = inlineBuffer.slice(0, -keep);
+            if (reasoning) onReasoning(reasoning);
+            inlineBuffer = inlineBuffer.slice(-keep);
+          }
+          break;
+        }
+
+        const openIndex = inlineBuffer.toLowerCase().indexOf('<think>');
+        if (openIndex >= 0) {
+          const answer = inlineBuffer.slice(0, openIndex);
+          if (answer) {
+            fullText += answer;
+            onToken(answer);
+          }
+          inlineBuffer = inlineBuffer.slice(openIndex + 7);
+          inlineReasoning = true;
+          continue;
+        }
+
+        const openTag = '<think>';
+        let overlap = 0;
+        for (let size = Math.min(openTag.length - 1, inlineBuffer.length); size > 0; size--) {
+          if (openTag.startsWith(inlineBuffer.slice(-size).toLowerCase())) { overlap = size; break; }
+        }
+        const flushLength = inlineBuffer.length - overlap;
+        if (flushLength > 0) {
+          const answer = inlineBuffer.slice(0, flushLength);
+          fullText += answer;
+          onToken(answer);
+          inlineBuffer = inlineBuffer.slice(flushLength);
+        }
+        break;
+      }
+    };
 
     try {
       const res = await fetch(`${this.baseUrl}/chat/completions`, {
@@ -280,7 +350,7 @@ export class FreeLLMAPIProvider {
           'Authorization': `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify(payload),
-        signal,
+        signal: timedRequest.signal,
       });
 
       if (!res.ok) {
@@ -328,10 +398,7 @@ export class FreeLLMAPIProvider {
                 const rChunk = delta.reasoning_content || delta.reasoning;
                 onReasoning(rChunk);
               }
-              if (delta?.content) {
-                fullText += delta.content;
-                onToken(delta.content);
-              }
+              if (delta?.content) emitContent(delta.content);
             } catch {
               // Ignore malformed chunk json and continue stream
             }
@@ -352,10 +419,7 @@ export class FreeLLMAPIProvider {
                 const rChunk = delta.reasoning_content || delta.reasoning;
                 onReasoning(rChunk);
               }
-              if (delta?.content) {
-                fullText += delta.content;
-                onToken(delta.content);
-              }
+              if (delta?.content) emitContent(delta.content);
             } catch {
               // ignore
             }
@@ -363,16 +427,23 @@ export class FreeLLMAPIProvider {
         }
       }
 
+      if (inlineBuffer) {
+        if (inlineReasoning) onReasoning(inlineBuffer);
+        else {
+          fullText += inlineBuffer;
+          onToken(inlineBuffer);
+        }
+      }
       onDone();
       return fullText;
     } catch (err) {
-      // Only call onError if the request was not intentionally aborted
-      if (signal && signal.aborted) {
-        return fullText;
-      }
+      // Only call onError if the original caller intentionally aborted the request.
+      if (signal && signal.aborted) return fullText;
       const formattedMsg = this.formatError(err);
       onError(new Error(formattedMsg));
       throw new Error(formattedMsg);
+    } finally {
+      timedRequest.cleanup();
     }
   }
 }
