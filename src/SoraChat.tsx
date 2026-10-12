@@ -417,6 +417,27 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
     }
   }, []);
 
+  useEffect(() => {
+    const stopVoiceOnTabChange = () => {
+      window.speechSynthesis?.cancel();
+      setSpeakingMessageIndex(null);
+      if (isListeningRef.current) {
+        isListeningRef.current = false;
+        setIsListening(false);
+        try { speechRecognitionRef.current?.stop(); } catch {}
+      }
+    };
+    window.addEventListener('sora:tab-change', stopVoiceOnTabChange);
+    return () => {
+      window.removeEventListener('sora:tab-change', stopVoiceOnTabChange);
+      if (abortControllerRef.current) abortControllerRef.current.abort();
+      if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current);
+      window.speechSynthesis?.cancel();
+      isListeningRef.current = false;
+      try { speechRecognitionRef.current?.stop(); } catch {}
+    };
+  }, []);
+
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
   // Debounced search handler
@@ -998,6 +1019,31 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
 
     let accumulatedContent = '';
     let onDoneHandled = false;
+    let abortFallbackHandled = false;
+
+    const finalizeAbortedTurn = () => {
+      if (abortFallbackHandled) return;
+      abortFallbackHandled = true;
+      onDoneHandled = true;
+      const finalDuration = Math.round((Date.now() - startTime) / 100) / 10;
+      setMessages((prev) => {
+        const updated = [...prev];
+        const lastIdx = updated.length - 1;
+        if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
+          const current = updated[lastIdx].content;
+          if (typeof current !== 'string' || !current.trim() || /^\\*Executing\\s/.test(current)) {
+            updated[lastIdx] = {
+              ...updated[lastIdx],
+              content: 'Stopped.',
+              thinkingLog: [...(updated[lastIdx].thinkingLog || []), 'Stopped by user.'],
+            };
+          }
+        }
+        return updated;
+      });
+      finishChatTurn(finalDuration);
+    };
+    abortController.signal.addEventListener('abort', finalizeAbortedTurn, { once: true });
 
     // Send history to backend
     await streamChatMessage(
@@ -1064,10 +1110,9 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
             const updated = [...prev];
             const lastIdx = updated.length - 1;
             if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
-              const prevContent = updated[lastIdx].content;
-              const nextContent = (typeof prevContent === 'string' ? prevContent : '') + token;
-              // Never fall back to raw provider output: unfinished tool markup must stay hidden.
-              const cleanedContent = stripToolCallsFromText(nextContent);
+              // Always derive display text from the raw stream. Reusing an already-stripped
+              // partial can permanently lose text that followed an incomplete protocol tag.
+              const cleanedContent = stripToolCallsFromText(accumulatedContent);
               updated[lastIdx] = {
                 ...updated[lastIdx],
                 content: cleanedContent,
@@ -1077,7 +1122,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
           });
         },
         onDone: async () => {
-          if (onDoneHandled) return;
+          if (onDoneHandled || abortController.signal.aborted) return;
           onDoneHandled = true;
           const finalDuration = Math.round((Date.now() - startTime) / 100) / 10;
 
@@ -1101,6 +1146,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
             const toolResults: Array<{ tool: string; ok: boolean; data?: unknown; error?: string }> = [];
 
             for (const toolCall of toolCalls) {
+              if (abortController.signal.aborted) return;
               setMessages((prev) => {
                 const updated = [...prev];
                 const lastIdx = updated.length - 1;
@@ -1122,6 +1168,10 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
               } catch (err: any) {
                 toolRes = { ok: false, error: err?.message || 'Tool execution failed' };
               }
+
+              // A running tool may not support cancellation, but never start the next
+              // tool or a follow-up generation after the user has stopped this turn.
+              if (abortController.signal.aborted) return;
 
               toolResults.push(toolRes?.ok
                 ? { tool: toolCall.tool, ok: true, data: toolRes.data }
@@ -1172,6 +1222,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                 recallMemory: false,
                 currentChatId: activeChatIdRef.current,
                 onToken: (tok) => {
+                  if (abortController.signal.aborted) return;
                   followUpAccumulated += tok;
                   const displayText = sanitizeContentForModel(followUpAccumulated);
                   setMessages((prev) => {
@@ -1184,6 +1235,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                   });
                 },
                 onDone: () => {
+                  if (abortController.signal.aborted) return;
                   const finalClean = sanitizeContentForModel(followUpAccumulated);
                   setMessages((prev) => {
                     const updated = [...prev];
@@ -1195,7 +1247,9 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                   });
                   finishChatTurn(finalDuration);
                 },
-                onError: () => finishChatTurn(finalDuration),
+                onError: () => {
+                  if (!abortController.signal.aborted) finishChatTurn(finalDuration);
+                },
               }
             );
             return;
@@ -1204,6 +1258,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
           finishChatTurn(finalDuration);
         },
         onError: (errMsg) => {
+          if (abortController.signal.aborted) return;
           if (thinkingIntervalRef.current) {
             clearInterval(thinkingIntervalRef.current);
           }

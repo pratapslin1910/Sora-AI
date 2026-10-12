@@ -95,6 +95,12 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
   const [expandedToolCalls, setExpandedToolCalls] = useState<Record<string, boolean>>({});
 
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => {
+    isAgentActiveRef.current = false;
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+  }, []);
   const isAgentActiveRef = useRef<boolean>(false);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const permissionAllowanceRef = useRef<'full_access' | 'sandbox' | 'strict'>('full_access');
@@ -459,6 +465,14 @@ When completely finished, provide your final answer with no further tool calls.`
 
         // Stream next step from LLM
         await new Promise<void>((resolve) => {
+          let settled = false;
+          const settle = () => {
+            if (settled) return;
+            settled = true;
+            abortController.signal.removeEventListener('abort', settle);
+            resolve();
+          };
+          abortController.signal.addEventListener('abort', settle, { once: true });
           streamChatMessage(internalChat, {
             signal: abortController.signal,
             onToken: (token) => {
@@ -475,10 +489,10 @@ When completely finished, provide your final answer with no further tool calls.`
                 return copy;
               });
             },
-            onDone: () => resolve(),
+            onDone: settle,
             onError: (err) => {
               stepResponseText += `\n\n⚠️ Error: ${err}`;
-              resolve();
+              settle();
             },
           });
         });

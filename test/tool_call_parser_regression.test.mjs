@@ -63,6 +63,11 @@ describe('Tool-call protocol regression coverage', () => {
     assert.equal(stripToolCallsFromText(response), 'I will inspect the project. Done.');
   });
 
+  it('preserves code-block indentation when stripping tool protocol', () => {
+    const code = '```js\n  function nested() {\n    return 1;\n  }\n```';
+    assert.equal(stripToolCallsFromText(code), code);
+  });
+
   it('hides an incomplete streamed tool block instead of leaking raw markup', () => {
     assert.equal(stripToolCallsFromText('Answer so far <dots_function_call><invoke name="read_file">'), 'Answer so far');
     assert.equal(stripToolCallsFromText('<invoke name="read_file"><parameter name="path">README.md</parameter>'), '');

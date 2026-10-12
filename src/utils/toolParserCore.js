@@ -128,7 +128,7 @@ export function stripToolCallsFromText(text) {
     }
     if (!removed) break;
   }
-  return cleaned.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  return cleaned.replace(/\n{3,}/g, '\n\n').trim();
 }
 export function sanitizeContentForModel(content) {
   return typeof content === 'string' ? stripToolCallsFromText(content) : '';
