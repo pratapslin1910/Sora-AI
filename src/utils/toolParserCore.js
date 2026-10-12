@@ -128,7 +128,15 @@ export function stripToolCallsFromText(text) {
     }
     if (!removed) break;
   }
-  return cleaned.replace(/\n{3,}/g, '\n\n').trim();
+  // Normalize prose whitespace without collapsing spaces inside code fences.
+  const codeBlocks = [];
+  cleaned = cleaned.replace(/```[\s\S]*?(?:```|$)/g, (block) => {
+    const marker = '\\u0001SORA_CODE_' + codeBlocks.length + '\\u0002';
+    codeBlocks.push(block);
+    return marker;
+  });
+  cleaned = cleaned.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  return cleaned.replace(/\\u0001SORA_CODE_(\\d+)\\u0002/g, (_match, index) => codeBlocks[Number(index)] ?? '');
 }
 export function sanitizeContentForModel(content) {
   return typeof content === 'string' ? stripToolCallsFromText(content) : '';
