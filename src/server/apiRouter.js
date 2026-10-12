@@ -748,7 +748,8 @@ export async function handleApiRequest(req, res, customProvider) {
       try {
       const writeStreamEvent = async (payload) => {
         if (res.destroyed || res.writableEnded || abortController.signal.aborted) return;
-        if (res.write(`data: ${JSON.stringify(payload)}\n\n`)) return;
+        const accepted = res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        if (accepted !== false) return;
         await new Promise((resolve) => {
           const cleanup = () => {
             res.removeListener('drain', onDrain);
