@@ -303,6 +303,13 @@ describe('SORA Modular Tool Extension System Tests', () => {
       });
 
       await em.initialize();
+      for (const id of ['sora-chrome', 'sora-windows', 'sora-terminal']) {
+        const manifest = em.manifests.get(id);
+        const grants = {};
+        for (const permission of manifest?.permissions || []) grants[permission] = true;
+        em.updateExtensionConfig(id, { permissions: grants });
+        await em.enableExtension(id);
+      }
       const list = em.listExtensions();
 
       const ids = list.map((e) => e.id);
@@ -324,6 +331,11 @@ describe('SORA Modular Tool Extension System Tests', () => {
         configFile: tempConfigFile,
       });
       await em.initialize();
+      const terminalManifest = em.manifests.get('sora-terminal');
+      const terminalGrants = {};
+      for (const permission of terminalManifest?.permissions || []) terminalGrants[permission] = true;
+      em.updateExtensionConfig('sora-terminal', { permissions: terminalGrants });
+      await em.enableExtension('sora-terminal');
 
       const result = await em.bridge.executeTool('terminal_execute', {
         command: 'node -e "console.log(\'SORA_EXT_TEST_OK\')"',
@@ -393,12 +405,18 @@ describe('SORA Modular Tool Extension System Tests', () => {
       assert.equal(importResult.ok, true);
       assert.equal(importResult.id, 'custom-calc-tool');
 
-      // Step 2: Discover tool
+      // An imported extension stays inert until a user explicitly enables it.
+      assert.equal(importResult.enabled, false);
+      assert.deepEqual(importResult.permissionsGranted, { apps: false });
+      assert.equal(em.toolRegistry.hasTool('calc_multiply'), false);
+
+      em.updateExtensionConfig('custom-calc-tool', { permissions: { apps: true } });
+      await em.enableExtension('custom-calc-tool');
       assert.equal(em.toolRegistry.hasTool('calc_multiply'), true);
       const promptText = em.toolRegistry.formatToolsForPrompt();
       assert.ok(promptText.includes('calc_multiply: Multiplies two numbers'));
 
-      // Step 3: Invoke tool through SORA execution bridge
+      // Invoke only after explicit enablement and grant.
       const execResult = await em.bridge.executeTool('calc_multiply', { x: 7, y: 9 });
       assert.equal(execResult.ok, true);
       assert.equal(execResult.data.result, 63);
