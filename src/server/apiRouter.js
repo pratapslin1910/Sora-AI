@@ -1240,11 +1240,12 @@ export async function handleApiRequest(req, res, customProvider) {
     try {
       const body = await parseJsonBody(req);
       const { path: relPath, isDir } = body;
-      if (!relPath) {
+      if (typeof relPath !== 'string' || !relPath.trim()) {
         jsonResponse(res, 400, { ok: false, error: 'Path is required' });
         return true;
       }
-      const target = resolveSafePath(relPath);
+      const requestWorkspaceRoot = activeWorkspaceRoot;
+      const target = resolveSafePath(relPath, requestWorkspaceRoot);
       if (isDir) {
         fs.mkdirSync(target, { recursive: true });
       } else {
@@ -1268,12 +1269,13 @@ export async function handleApiRequest(req, res, customProvider) {
     try {
       const body = await parseJsonBody(req);
       const { oldPath, newPath } = body;
-      if (!oldPath || !newPath) {
+      if (typeof oldPath !== 'string' || !oldPath.trim() || typeof newPath !== 'string' || !newPath.trim()) {
         jsonResponse(res, 400, { ok: false, error: 'Both oldPath and newPath are required' });
         return true;
       }
-      const targetOld = resolveSafePath(oldPath);
-      const targetNew = resolveSafePath(newPath);
+      const requestWorkspaceRoot = activeWorkspaceRoot;
+      const targetOld = resolveSafePath(oldPath, requestWorkspaceRoot);
+      const targetNew = resolveSafePath(newPath, requestWorkspaceRoot);
       if (!fs.existsSync(targetOld)) {
         jsonResponse(res, 404, { ok: false, error: 'Source not found: ' + oldPath });
         return true;
@@ -1303,23 +1305,25 @@ export async function handleApiRequest(req, res, customProvider) {
         jsonResponse(res, 400, { ok: false, error: 'Path is required' });
         return true;
       }
+      const requestWorkspaceRoot = activeWorkspaceRoot;
       const trimmed = relPath.trim();
       if (!trimmed || trimmed === '.' || trimmed === '/' || trimmed === '\\') {
         jsonResponse(res, 400, { ok: false, error: 'Cannot delete the active workspace root folder.' });
         return true;
       }
-      const target = resolveSafePath(trimmed);
-      // Essential safeguard: Prevent deleting the active workspace root itself
+      const target = resolveSafePath(trimmed, requestWorkspaceRoot);
+      // Protect the workspace captured for this request, even if another request
+      // switches the global active workspace while this delete is in flight.
       if (
-        path.resolve(target) === path.resolve(activeWorkspaceRoot) ||
-        !path.relative(activeWorkspaceRoot, target) ||
-        path.relative(activeWorkspaceRoot, target) === '.'
+        path.resolve(target) === path.resolve(requestWorkspaceRoot) ||
+        !path.relative(requestWorkspaceRoot, target) ||
+        path.relative(requestWorkspaceRoot, target) === '.'
       ) {
         jsonResponse(res, 400, { ok: false, error: 'Cannot delete the active workspace root folder.' });
         return true;
       }
       // Essential safeguard: Protect .git metadata repository folder
-      const relNorm = path.relative(activeWorkspaceRoot, target).replace(/\\/g, '/');
+      const relNorm = path.relative(requestWorkspaceRoot, target).replace(/\\/g, '/');
       if (relNorm === '.git' || relNorm.startsWith('.git/')) {
         jsonResponse(res, 403, { ok: false, error: 'Cannot delete .git repository directory.' });
         return true;
