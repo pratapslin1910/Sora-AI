@@ -672,6 +672,7 @@ export async function executeTerminalCommand(command: string, cwd?: string): Pro
       headers: { 'Content-Type': 'application/json', 'X-Sora-Execution-Token': token },
       body: JSON.stringify({ command, cwd }),
     });
+    if (res.status === 403) cachedIdeExecutionToken = null;
     return await res.json();
   } catch (err: any) {
     return { ok: false, stdout: '', stderr: err.message, exitCode: 1 };

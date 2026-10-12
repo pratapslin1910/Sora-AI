@@ -136,7 +136,7 @@ describe('Stage B Enhancements & Reliability Regression Tests', () => {
     it('allows safe terminal commands and returns exitCode 0', async () => {
       const res = await fetch(`${baseUrl}/api/ide/exec`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1' },
+        headers: await authorizedExecHeaders(),
         body: JSON.stringify({ command: 'node -e "console.log(\'terminal-freedom-ok\')"' }),
       });
       assert.equal(res.status, 200);
