@@ -148,7 +148,7 @@ describe('IDE & Workspace Endpoints Tests', () => {
   it('POST /api/ide/exec executes commands in active workspace', async () => {
     const execRes = await fetch(`${baseUrl}/api/ide/exec`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1' },
       body: JSON.stringify({ command: 'echo "Sora Terminal OK"' }),
     });
     assert.equal(execRes.status, 200);
