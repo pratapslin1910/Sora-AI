@@ -2,7 +2,7 @@
  * SORA Chrome Automation Extension Implementation
  */
 
-import { exec } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { assertSafeUrl } from '../../src/server/siteReader.js';
@@ -39,9 +39,42 @@ function normalizeUrl(targetUrl, searchPrefix = 'https://www.google.com/search?q
 /**
  * Search the web or navigate to a target URL in Google Chrome.
  */
+
+function launchDetached(executable, args = []) {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(executable, args, {
+        shell: false,
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+function launchDefaultBrowser(targetUrl) {
+  if (process.platform === 'win32') {
+    return launchDetached('rundll32.exe', ['url.dll,FileProtocolHandler', targetUrl]);
+  }
+  if (process.platform === 'darwin') {
+    return launchDetached('open', [targetUrl]);
+  }
+  return launchDetached('xdg-open', [targetUrl]);
+}
+
 export async function chrome_search_and_navigate(args, context = {}) {
-  const { url, newTab = true } = args;
-  if (!url) {
+  const { url, newTab = true } = args || {};
+  if (typeof url !== 'string' || !url.trim()) {
     return { ok: false, error: 'URL or search query is required' };
   }
 
@@ -49,38 +82,27 @@ export async function chrome_search_and_navigate(args, context = {}) {
   const chromePath = findChromePath(config.chromeExecutablePath);
   const targetUrl = normalizeUrl(url, config.defaultSearchEngine);
 
-  return new Promise((resolve) => {
-    const cmd = `start "" "${chromePath}" "${targetUrl}"`;
-    exec(cmd, { windowsHide: true }, (err) => {
-      if (err) {
-        // Fallback to default browser opener
-        exec(`start "" "${targetUrl}"`, (fallbackErr) => {
-          if (fallbackErr) {
-            resolve({ ok: false, error: `Failed to open URL: ${fallbackErr.message}` });
-          } else {
-            resolve({
-              ok: true,
-              data: {
-                navigatedTo: targetUrl,
-                method: 'default-browser-fallback',
-                newTab,
-              },
-            });
-          }
-        });
-        return;
-      }
-
-      resolve({
+  try {
+    // Pass the URL as one argv value. It is never re-parsed by cmd.exe.
+    await launchDetached(chromePath, [targetUrl]);
+    return {
+      ok: true,
+      data: { navigatedTo: targetUrl, browser: 'Google Chrome', newTab },
+    };
+  } catch (chromeErr) {
+    try {
+      await launchDefaultBrowser(targetUrl);
+      return {
         ok: true,
-        data: {
-          navigatedTo: targetUrl,
-          browser: 'Google Chrome',
-          newTab,
-        },
-      });
-    });
-  });
+        data: { navigatedTo: targetUrl, method: 'default-browser-fallback', newTab },
+      };
+    } catch (fallbackErr) {
+      return {
+        ok: false,
+        error: `Failed to open URL: ${fallbackErr?.message || chromeErr?.message || 'browser launch failed'}`,
+      };
+    }
+  }
 }
 
 /**

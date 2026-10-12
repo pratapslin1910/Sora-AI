@@ -1031,7 +1031,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
         const lastIdx = updated.length - 1;
         if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
           const current = updated[lastIdx].content;
-          if (typeof current !== 'string' || !current.trim() || /^\\*Executing\\s/.test(current)) {
+          if (typeof current !== 'string' || !current.trim() || /^\*Executing\s/.test(current)) {
             updated[lastIdx] = {
               ...updated[lastIdx],
               content: 'Stopped.',

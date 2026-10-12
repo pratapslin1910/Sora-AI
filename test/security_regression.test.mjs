@@ -599,3 +599,12 @@ describe('FIX — Windows application launch cannot execute arbitrary shell comm
     assert.match(result.error, /arguments are disabled/);
   });
 });
+
+describe('Chrome URL launch injection regression', () => {
+  it('passes URLs through a shell-free process argument list', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'extensions', 'chrome', 'index.js'), 'utf-8');
+    assert.ok(source.includes('spawn(executable, args'));
+    assert.ok(source.includes('shell: false'));
+    assert.equal(source.includes('start "" "${chromePath}" "${targetUrl}"'), false);
+  });
+});

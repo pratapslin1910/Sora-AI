@@ -95,13 +95,13 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
   const [expandedToolCalls, setExpandedToolCalls] = useState<Record<string, boolean>>({});
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const isAgentActiveRef = useRef<boolean>(false);
 
   useEffect(() => () => {
     isAgentActiveRef.current = false;
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
   }, []);
-  const isAgentActiveRef = useRef<boolean>(false);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const permissionAllowanceRef = useRef<'full_access' | 'sandbox' | 'strict'>('full_access');
 
