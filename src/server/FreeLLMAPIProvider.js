@@ -293,14 +293,14 @@ export class FreeLLMAPIProvider {
     let inlineReasoning = false;
     let inlineBuffer = '';
 
-    const emitContent = (chunk) => {
+    const emitContent = async (chunk) => {
       inlineBuffer += chunk;
       while (inlineBuffer.length) {
         if (inlineReasoning) {
           const closeIndex = inlineBuffer.toLowerCase().indexOf('</think>');
           if (closeIndex >= 0) {
             const reasoning = inlineBuffer.slice(0, closeIndex);
-            if (reasoning) onReasoning(reasoning);
+            if (reasoning) await onReasoning(reasoning);
             inlineBuffer = inlineBuffer.slice(closeIndex + 8);
             inlineReasoning = false;
             continue;
@@ -308,7 +308,7 @@ export class FreeLLMAPIProvider {
           const keep = '</think>'.length - 1;
           if (inlineBuffer.length > keep) {
             const reasoning = inlineBuffer.slice(0, -keep);
-            if (reasoning) onReasoning(reasoning);
+            if (reasoning) await onReasoning(reasoning);
             inlineBuffer = inlineBuffer.slice(-keep);
           }
           break;
@@ -319,7 +319,7 @@ export class FreeLLMAPIProvider {
           const answer = inlineBuffer.slice(0, openIndex);
           if (answer) {
             fullText += answer;
-            onToken(answer);
+            await onToken(answer);
           }
           inlineBuffer = inlineBuffer.slice(openIndex + 7);
           inlineReasoning = true;
@@ -335,7 +335,7 @@ export class FreeLLMAPIProvider {
         if (flushLength > 0) {
           const answer = inlineBuffer.slice(0, flushLength);
           fullText += answer;
-          onToken(answer);
+          await onToken(answer);
           inlineBuffer = inlineBuffer.slice(flushLength);
         }
         break;
@@ -396,9 +396,9 @@ export class FreeLLMAPIProvider {
               const delta = chunkJson?.choices?.[0]?.delta;
               if (delta?.reasoning_content || delta?.reasoning) {
                 const rChunk = delta.reasoning_content || delta.reasoning;
-                onReasoning(rChunk);
+                await onReasoning(rChunk);
               }
-              if (delta?.content) emitContent(delta.content);
+              if (delta?.content) await emitContent(delta.content);
             } catch {
               // Ignore malformed chunk json and continue stream
             }
@@ -417,9 +417,9 @@ export class FreeLLMAPIProvider {
               const delta = chunkJson?.choices?.[0]?.delta;
               if (delta?.reasoning_content || delta?.reasoning) {
                 const rChunk = delta.reasoning_content || delta.reasoning;
-                onReasoning(rChunk);
+                await onReasoning(rChunk);
               }
-              if (delta?.content) emitContent(delta.content);
+              if (delta?.content) await emitContent(delta.content);
             } catch {
               // ignore
             }
@@ -428,10 +428,10 @@ export class FreeLLMAPIProvider {
       }
 
       if (inlineBuffer) {
-        if (inlineReasoning) onReasoning(inlineBuffer);
+        if (inlineReasoning) await onReasoning(inlineBuffer);
         else {
           fullText += inlineBuffer;
-          onToken(inlineBuffer);
+          await onToken(inlineBuffer);
         }
       }
       onDone();

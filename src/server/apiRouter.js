@@ -718,8 +718,10 @@ export async function handleApiRequest(req, res, customProvider) {
         abortController.abort(new Error('Client disconnected.'));
       }
     };
-    res.on('close', abortIfClientDisconnected);
-    res.on('error', abortIfClientDisconnected);
+    if (typeof res.on === 'function') {
+      res.on('close', abortIfClientDisconnected);
+      res.on('error', abortIfClientDisconnected);
+    }
 
     if (stream) {
       res.writeHead(200, {
@@ -746,7 +748,7 @@ export async function handleApiRequest(req, res, customProvider) {
       try {
       const writeStreamEvent = async (payload) => {
         if (res.destroyed || res.writableEnded || abortController.signal.aborted) return;
-        if (res.write(`data: ${JSON.stringify(payload)}\\n\\n`)) return;
+        if (res.write(`data: ${JSON.stringify(payload)}\n\n`)) return;
         await new Promise((resolve) => {
           const cleanup = () => {
             res.removeListener('drain', onDrain);

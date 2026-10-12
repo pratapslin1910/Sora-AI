@@ -57,6 +57,13 @@ describe('FreeLLMAPIProvider Unit & Mock Tests', () => {
               'Cache-Control': 'no-cache',
               'Connection': 'keep-alive',
             });
+            if (parsed.model === 'inline-test') {
+              res.write('data: {"choices":[{"delta":{"content":"Hello<thi"}}]}\n\n');
+              res.write('data: {"choices":[{"delta":{"content":"nk>SECRET_MARKER</think> world!"}}]}\n\n');
+              res.write('data: [DONE]\n\n');
+              res.end();
+              return;
+            }
             // Send reasoning chunk (which should be skipped from content)
             res.write('data: {"choices":[{"delta":{"reasoning_content":"Thinking..."}}]}\n\n');
             // Send content tokens
@@ -200,6 +207,24 @@ describe('FreeLLMAPIProvider Unit & Mock Tests', () => {
     assert.equal(completed, true);
     assert.deepEqual(tokens, ['Hello', ' world!']);
     assert.equal(fullText, 'Hello world!');
+  });
+
+  it('filters inline tagged content across delta boundaries', async () => {
+    const provider = new FreeLLMAPIProvider({
+      baseUrl: mockBaseUrl,
+      apiKey: 'valid_key',
+      model: 'inline-test',
+    });
+    const tokens = [];
+    const reasoningParts = [];
+    const fullText = await provider.streamChat({
+      messages: [{ role: 'user', content: 'Hello' }],
+      onToken: (token) => tokens.push(token),
+      onReasoning: (token) => reasoningParts.push(token),
+    });
+    assert.equal(tokens.join(''), 'Hello world!');
+    assert.equal(fullText, 'Hello world!');
+    assert.equal(reasoningParts.join(''), 'SECRET_MARKER');
   });
 
   it('handles 429 rate limit errors cleanly', async () => {
