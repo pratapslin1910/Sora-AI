@@ -1164,7 +1164,23 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
 
               let toolRes: any;
               try {
-                toolRes = await executeExtensionTool(toolCall.tool, toolCall.args);
+                toolRes = await executeExtensionTool(toolCall.tool, toolCall.args, {
+                  signal: abortController.signal,
+                });
+                if (toolRes?.requiresConfirmation && toolRes?.confirmationToken) {
+                  const argsPreview = JSON.stringify(toolCall.args, null, 2).slice(0, 1600);
+                  const approved = typeof window !== 'undefined' && window.confirm(
+                    `Strict Mode confirmation\\n\\nSora wants to run "${toolCall.tool}" with these arguments:\\n\\n${argsPreview}\\n\\nAllow this action?`
+                  );
+                  if (approved && !abortController.signal.aborted) {
+                    toolRes = await executeExtensionTool(toolCall.tool, toolCall.args, {
+                      signal: abortController.signal,
+                      confirmationToken: toolRes.confirmationToken,
+                    });
+                  } else {
+                    toolRes = { ok: false, error: 'The user declined the confirmation.' };
+                  }
+                }
               } catch (err: any) {
                 toolRes = { ok: false, error: err?.message || 'Tool execution failed' };
               }

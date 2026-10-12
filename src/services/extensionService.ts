@@ -138,13 +138,23 @@ export async function fetchExtensionTools(): Promise<{
 
 export async function executeExtensionTool(
   tool: string,
-  args: Record<string, any>
-): Promise<{ ok: boolean; data?: any; error?: string; executionTimeMs?: number }> {
+  args: Record<string, any>,
+  options: { signal?: AbortSignal; confirmationToken?: string } = {}
+): Promise<{
+  ok: boolean;
+  data?: any;
+  error?: string;
+  executionTimeMs?: number;
+  requiresConfirmation?: boolean;
+  confirmationToken?: string;
+  reason?: string;
+}> {
   try {
     const res = await fetch('/api/extensions/execute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tool, args }),
+      signal: options.signal,
+      body: JSON.stringify({ tool, args, confirmationToken: options.confirmationToken }),
     });
     return await res.json();
   } catch (err: any) {

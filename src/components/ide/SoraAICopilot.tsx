@@ -152,6 +152,17 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
     args: Record<string, any>
   ): Promise<{ ok: boolean; data?: any; error?: string }> => {
     const startTime = Date.now();
+    const strictMutations = new Set(['write_file', 'create_item', 'rename_item', 'delete_item', 'run_command']);
+    if (permissionAllowanceRef.current === 'strict' && strictMutations.has(tool)) {
+      const argsPreview = JSON.stringify(args, null, 2).slice(0, 1600);
+      const approved = typeof window !== 'undefined' && window.confirm(
+        `Strict Mode confirmation\\n\\nSora wants to perform "${tool}" with these arguments:\\n\\n${argsPreview}\\n\\nAllow this action?`
+      );
+      if (!approved) return { ok: false, error: 'The user declined the Strict Mode confirmation.' };
+      // Existing action-specific checks consume this value. It is assigned only
+      // after the user explicitly approves this request.
+      args = { ...args, __confirmed: true };
+    }
     try {
       if (tool === 'list_dir') {
         const path = args.path || '';
