@@ -2,7 +2,7 @@
  * SORA Chrome Automation Extension Implementation
  */
 
-import { exec, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { safeFetch } from '../../src/server/siteReader.js';
@@ -109,13 +109,10 @@ export async function chrome_search_and_navigate(args, context = {}) {
  * Manage Chrome tabs: open, close, list.
  */
 export async function chrome_manage_tabs(args, context = {}) {
-  const { action, url } = args;
+  const { action, url } = args || {};
 
   if (action === 'open') {
-    // When no URL is given, or the model sends "about:blank" / "newtab",
-    // open a real blank new tab via chrome://newtab so the user sees a clean
-    // browser new-tab page instead of a google search for "about:blank".
-    const rawUrl = (url || '').trim().toLowerCase();
+    const rawUrl = (typeof url === 'string' ? url : '').trim().toLowerCase();
     const isBlankIntent =
       !rawUrl ||
       rawUrl === 'about:blank' ||
@@ -126,33 +123,22 @@ export async function chrome_manage_tabs(args, context = {}) {
     if (isBlankIntent) {
       const config = context.config || {};
       const chromePath = findChromePath(config.chromeExecutablePath);
-      return new Promise((resolve) => {
-        // Open a new Chrome window/tab without any URL argument so it shows the default new-tab page.
-        const cmd = `start "" "${chromePath}"`;
-        exec(cmd, { windowsHide: true }, (err) => {
-          if (err) {
-            // Fallback: try 'start chrome' (if in PATH)
-            exec('start chrome', (fallbackErr) => {
-              if (fallbackErr) {
-                resolve({ ok: false, error: `Failed to open Chrome: ${fallbackErr.message}` });
-              } else {
-                resolve({ ok: true, data: { navigatedTo: 'New Tab', browser: 'Google Chrome', newTab: true } });
-              }
-            });
-            return;
-          }
-          resolve({ ok: true, data: { navigatedTo: 'New Tab', browser: 'Google Chrome', newTab: true } });
-        });
-      });
+      try {
+        await launchDetached(chromePath, []);
+      } catch (err) {
+        try {
+          await launchDetached('chrome', []);
+        } catch (fallbackErr) {
+          return { ok: false, error: `Failed to open Chrome: ${fallbackErr?.message || err?.message}` };
+        }
+      }
+      return { ok: true, data: { navigatedTo: 'New Tab', browser: 'Google Chrome', newTab: true } };
     }
 
     return chrome_search_and_navigate({ url, newTab: true }, context);
   }
 
   if (action === 'close') {
-    // Chrome DevTools Protocol is not available here; we cannot close a specific tab
-    // without a CDP connection. Return an explicit unsupported result rather than
-    // reporting false success.
     return {
       ok: false,
       error: 'chrome_manage_tabs: "close" requires a Chrome DevTools Protocol (CDP) connection which is not available in this extension. Use the Chrome window directly to close a tab (Ctrl+W).',
@@ -165,7 +151,6 @@ export async function chrome_manage_tabs(args, context = {}) {
   }
 
   if (action === 'list') {
-    // Cannot enumerate open tabs without CDP. Return an explicit unsupported result.
     return {
       ok: false,
       error: 'chrome_manage_tabs: "list" requires a Chrome DevTools Protocol (CDP) connection which is not available in this extension.',
@@ -184,31 +169,39 @@ export async function chrome_manage_tabs(args, context = {}) {
  * Open a new Chrome window or private Incognito window.
  */
 export async function chrome_manage_windows(args = {}, context = {}) {
-  const { incognito = false, url = 'https://www.google.com' } = args;
+  const { incognito = false, url = 'https://www.google.com' } = args || {};
+  if (typeof url !== 'string' || !url.trim()) {
+    return { ok: false, error: 'A valid URL is required.' };
+  }
   const config = context.config || {};
   const chromePath = findChromePath(config.chromeExecutablePath);
   const targetUrl = normalizeUrl(url, config.defaultSearchEngine);
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(targetUrl);
+  } catch {
+    return { ok: false, error: 'Invalid URL.' };
+  }
+  if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+    return { ok: false, error: 'Only HTTP and HTTPS URLs can be opened in a new window.' };
+  }
 
-  return new Promise((resolve) => {
-    const flags = incognito ? '--incognito --new-window' : '--new-window';
-    const cmd = `start "" "${chromePath}" ${flags} "${targetUrl}"`;
-
-    exec(cmd, { windowsHide: true }, (err) => {
-      if (err) {
-        resolve({ ok: false, error: `Failed to open window: ${err.message}` });
-        return;
-      }
-
-      resolve({
-        ok: true,
-        data: {
-          windowType: incognito ? 'incognito' : 'standard',
-          openedUrl: targetUrl,
-          message: `Opened ${incognito ? 'Incognito' : 'standard'} Chrome window.`,
-        },
-      });
-    });
-  });
+  const argv = incognito
+    ? ['--incognito', '--new-window', targetUrl]
+    : ['--new-window', targetUrl];
+  try {
+    await launchDetached(chromePath, argv);
+    return {
+      ok: true,
+      data: {
+        windowType: incognito ? 'incognito' : 'standard',
+        openedUrl: targetUrl,
+        message: `Opened ${incognito ? 'Incognito' : 'standard'} Chrome window.`,
+      },
+    };
+  } catch (err) {
+    return { ok: false, error: `Failed to open window: ${err?.message || 'browser launch failed'}` };
+  }
 }
 
 /**

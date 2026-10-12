@@ -606,5 +606,6 @@ describe('Chrome URL launch injection regression', () => {
     assert.ok(source.includes('spawn(executable, args'));
     assert.ok(source.includes('shell: false'));
     assert.equal(source.includes('start "" "${chromePath}" "${targetUrl}"'), false);
+    assert.doesNotMatch(source, /const cmd = `start[^\n]*\$\{targetUrl\}/);
   });
 });
