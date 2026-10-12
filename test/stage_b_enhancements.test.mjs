@@ -124,6 +124,14 @@ describe('Stage B Enhancements & Reliability Regression Tests', () => {
     });
   });
 
+  const authorizedExecHeaders = async () => {
+    const tokenRes = await fetch(`${baseUrl}/api/ide/execution-token`, {
+      headers: { Origin: 'http://127.0.0.1', 'X-Sora-Token-Request': '1' },
+    });
+    const { token } = await tokenRes.json();
+    return { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1', 'X-Sora-Execution-Token': token };
+  };
+
   describe('2. Terminal Freedom & Destructive Safeguards', () => {
     it('allows safe terminal commands and returns exitCode 0', async () => {
       const res = await fetch(`${baseUrl}/api/ide/exec`, {
@@ -150,7 +158,7 @@ describe('Stage B Enhancements & Reliability Regression Tests', () => {
       for (const cmd of dangerousCommands) {
         const res = await fetch(`${baseUrl}/api/ide/exec`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1' },
+          headers: await authorizedExecHeaders(),
           body: JSON.stringify({ command: cmd }),
         });
         assert.equal(res.status, 403);

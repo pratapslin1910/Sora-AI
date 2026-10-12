@@ -650,11 +650,26 @@ export async function deleteWorkspaceItem(filePath: string): Promise<{ ok: boole
   }
 }
 
+let cachedIdeExecutionToken: string | null = null;
+
+async function getIdeExecutionToken(): Promise<string> {
+  if (cachedIdeExecutionToken) return cachedIdeExecutionToken;
+  const res = await fetch('/api/ide/execution-token', {
+    headers: { 'X-Sora-Token-Request': '1' },
+  });
+  if (!res.ok) throw new Error('Unable to authorize the integrated terminal.');
+  const result = await res.json();
+  if (typeof result.token !== 'string' || !result.token) throw new Error('Invalid terminal execution token response.');
+  cachedIdeExecutionToken = result.token;
+  return cachedIdeExecutionToken;
+}
+
 export async function executeTerminalCommand(command: string, cwd?: string): Promise<TerminalExecResult> {
   try {
+    const token = await getIdeExecutionToken();
     const res = await fetch('/api/ide/exec', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Sora-Execution-Token': token },
       body: JSON.stringify({ command, cwd }),
     });
     return await res.json();

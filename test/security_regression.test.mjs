@@ -468,6 +468,15 @@ describe('FIX 7 — Terminal exec: exit code and catastrophic command blocking',
     await new Promise((resolve) => server.close(resolve));
   });
 
+  const authorizedExecHeaders = async () => {
+    const tokenRes = await fetch(`${baseUrl}/api/ide/execution-token`, {
+      headers: { Origin: 'http://127.0.0.1', 'X-Sora-Token-Request': '1' },
+    });
+    assert.equal(tokenRes.status, 200);
+    const { token } = await tokenRes.json();
+    return { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1', 'X-Sora-Execution-Token': token };
+  };
+
   it('rejects terminal execution when Origin is missing', async () => {
     const res = await fetch(`${baseUrl}/api/ide/exec`, {
       method: 'POST',
@@ -478,10 +487,20 @@ describe('FIX 7 — Terminal exec: exit code and catastrophic command blocking',
     assert.equal((await res.json()).ok, false);
   });
 
-  it('successful command returns exitCode: 0 and ok: true', async () => {
+  it('rejects terminal execution without a capability token even from a trusted Origin', async () => {
     const res = await fetch(`${baseUrl}/api/ide/exec`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1' },
+      body: JSON.stringify({ command: 'echo SHOULD_NOT_RUN' }),
+    });
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).ok, false);
+  });
+
+  it('successful command returns exitCode: 0 and ok: true', async () => {
+    const res = await fetch(`${baseUrl}/api/ide/exec`, {
+      method: 'POST',
+      headers: await authorizedExecHeaders(),
       body: JSON.stringify({ command: 'echo hello' }),
     });
     const data = await res.json();
@@ -493,7 +512,7 @@ describe('FIX 7 — Terminal exec: exit code and catastrophic command blocking',
   it('exec always includes exitCode field', async () => {
     const res = await fetch(`${baseUrl}/api/ide/exec`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1' },
+      headers: await authorizedExecHeaders(),
       body: JSON.stringify({ command: 'echo test' }),
     });
     const data = await res.json();
@@ -503,7 +522,7 @@ describe('FIX 7 — Terminal exec: exit code and catastrophic command blocking',
   it('catastrophic command is blocked with HTTP 403', async () => {
     const res = await fetch(`${baseUrl}/api/ide/exec`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1' },
+      headers: await authorizedExecHeaders(),
       body: JSON.stringify({ command: 'format C:' }),
     });
     assert.equal(res.status, 403);

@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { exec } from 'node:child_process';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { FreeLLMAPIProvider } from './FreeLLMAPIProvider.js';
 import { listChats, getChatById, saveChat, deleteChat, deleteAllChats, deleteChatsOlderThan, searchChats } from './chatStore.js';
 import { performWebSearch, readSiteContent } from './webSearch.js';
@@ -40,6 +41,7 @@ const SETTINGS_FILE = path.resolve(__dirname, '../../data/sora_settings.json');
 const DEFAULT_BASE_URL = 'http://127.0.0.1:31415/v1';
 const DEFAULT_MODEL = 'auto';
 const DEFAULT_CHAT_RETENTION_DAYS = 0;
+const IDE_EXEC_TOKEN = process.env.SORA_IDE_EXEC_TOKEN || randomBytes(32).toString('hex');
 
 let defaultProviderInstance = null;
 let activeWorkspaceRoot = process.cwd();
@@ -1355,9 +1357,24 @@ export async function handleApiRequest(req, res, customProvider) {
     return true;
   }
 
-  // POST /api/ide/exec — direct shell access requires a trusted local browser origin.
+  // A same-origin browser can obtain the per-process capability used by the IDE terminal.
+  if (req.method === 'GET' && pathname === '/api/ide/execution-token') {
+    if (!origin || !isAllowedOrigin(origin) || req.headers['x-sora-token-request'] !== '1') {
+      jsonResponse(res, 403, { ok: false, error: 'Forbidden: execution token requires a trusted local Origin.' });
+      return true;
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    jsonResponse(res, 200, { ok: true, token: IDE_EXEC_TOKEN });
+    return true;
+  }
+
+  // POST /api/ide/exec — shell access requires both a trusted Origin and capability token.
   if (req.method === 'POST' && pathname === '/api/ide/exec') {
-    if (!origin || !isAllowedOrigin(origin)) {
+    const suppliedToken = req.headers['x-sora-execution-token'];
+    const tokenMatches = typeof suppliedToken === 'string' &&
+      suppliedToken.length === IDE_EXEC_TOKEN.length &&
+      timingSafeEqual(Buffer.from(suppliedToken), Buffer.from(IDE_EXEC_TOKEN));
+    if (!origin || !isAllowedOrigin(origin) || !tokenMatches) {
       jsonResponse(res, 403, { ok: false, error: 'Forbidden: terminal execution requires a trusted local Origin.' });
       return true;
     }
@@ -1399,8 +1416,8 @@ export async function handleApiRequest(req, res, customProvider) {
           shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
         },
         (error, stdout, stderr) => {
-          jsonResponse(res, 200, {
-            ok: true,
+          jsonResponse(res, error ? 400 : 200, {
+            ok: !error,
             stdout: stdout || '',
             stderr: stderr || (error ? error.message : ''),
             // error.code can be a string (signal name) or number on Windows — normalise to number
