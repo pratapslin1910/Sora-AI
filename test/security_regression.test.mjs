@@ -573,3 +573,29 @@ describe('FIX 10 — GitHub Actions CI workflow exists', () => {
     assert.ok(content.includes('lint') || content.includes('oxlint'), 'Must have lint step');
   });
 });
+
+
+// C2 — Application launch must not escape the apps permission into a shell.
+describe('FIX — Windows application launch cannot execute arbitrary shell commands', () => {
+  it('rejects command interpreters through windows_launch_app', async () => {
+    const { windows_launch_app } = await import('../extensions/windows/index.js');
+    for (const appName of ['cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh']) {
+      const result = await windows_launch_app({ appName, args: ['/c', 'calc'] });
+      assert.equal(result.ok, false, `${appName} must not be launchable via apps permission`);
+    }
+  });
+
+  it('rejects arbitrary executable paths', async () => {
+    const { windows_launch_app } = await import('../extensions/windows/index.js');
+    const result = await windows_launch_app({ appName: 'C:\\Temp\\untrusted.exe', args: [] });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /Unsupported application/);
+  });
+
+  it('does not pass command arguments to Windows Terminal through apps permission', async () => {
+    const { windows_launch_app } = await import('../extensions/windows/index.js');
+    const result = await windows_launch_app({ appName: 'wt', args: ['cmd', '/c', 'calc'] });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /arguments are disabled/);
+  });
+});
