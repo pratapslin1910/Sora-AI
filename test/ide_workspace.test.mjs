@@ -179,7 +179,7 @@ describe('IDE & Workspace Endpoints Tests', () => {
       name: 'sora-persistent-session-test',
       private: true,
       scripts: {
-        dev: 'node -e "setInterval(() => console.log(\\'persistent-session-tick\\'), 1000)"',
+        dev: 'node -e "setInterval(() => console.log(12345), 1000)"',
       },
     }, null, 2));
 
@@ -212,7 +212,7 @@ describe('IDE & Workspace Endpoints Tests', () => {
     assert.equal(statusRes.status, 200);
     const status = await statusRes.json();
     assert.equal(status.running, true);
-    assert.match(status.stdout, /persistent-session-tick/);
+    assert.match(status.stdout, /12345/);
 
     const stopRes = await fetch(`${baseUrl}/api/ide/session/${started.processId}/stop`, {
       method: 'POST',
