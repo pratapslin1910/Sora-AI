@@ -36,7 +36,10 @@ export function getReadyModelIds(catalogue) {
   if (!Array.isArray(catalogue)) return [];
   const ready = catalogue.filter((entry) => {
     if (typeof entry === 'string') return false;
-    return String(entry?.execution_status ?? entry?.executionStatus ?? '').toLowerCase() === 'ready';
+    const status = String(entry?.execution_status ?? entry?.executionStatus ?? '').trim().toLowerCase();
+    if (status) return status === 'ready';
+    // Older FreeLLMAPI releases expose availability without execution_status.
+    return entry?.available === true || entry?.available === 1 || entry?.available === '1';
   });
   return getConcreteModelIds(ready);
 }
