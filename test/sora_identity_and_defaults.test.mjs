@@ -153,6 +153,44 @@ test('Sora AI Permanent Identity and Response Defaults Tests', async (t) => {
     assert.deepEqual(resolved, []);
   });
 
+  await t.test('3b. Saved user instructions are injected even when query-based recall is disabled', async () => {
+    saveMemoriesToDisk([]);
+    const preferenceText = 'Always respond in natural Hinglish when the user writes in Hinglish.';
+    saveMemory({
+      type: 'instruction',
+      title: 'Communication Preference',
+      content: preferenceText,
+      pinned: false,
+      tags: ['user-preference'],
+    });
+
+    const mockProvider = new FreeLLMAPIProvider();
+    let sentMessages = null;
+    mockProvider.chat = async ({ messages }) => {
+      sentMessages = messages;
+      return { role: 'assistant', content: 'Preference received.' };
+    };
+
+    const req = new http.IncomingMessage(null);
+    req.method = 'POST';
+    req.url = '/api/chat';
+    req.push(JSON.stringify({
+      messages: [{ role: 'user', content: 'What is 2 + 2?' }],
+      stream: false,
+      recallMemory: false,
+    }));
+    req.push(null);
+
+    const res = new http.ServerResponse(req);
+    res.setHeader = () => {};
+    res.end = () => {};
+    await handleApiRequest(req, res, mockProvider);
+
+    const systemPrompt = sentMessages.find((message) => message.role === 'system')?.content || '';
+    assert.ok(systemPrompt.includes(preferenceText), 'Saved preferences must be passed to the model even when semantic recall is disabled.');
+    saveMemoriesToDisk([]);
+  });
+
   await t.test('4. New chats, restored chats, and streaming requests preserving the same identity', async () => {
     const mockProvider = new FreeLLMAPIProvider();
     let sentMessages = null;
