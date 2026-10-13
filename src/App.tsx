@@ -14,6 +14,7 @@ function App() {
     model: 'auto',
   });
   const [assistantPrompt, setAssistantPrompt] = useState<string | undefined>(undefined);
+  const [copilotTask, setCopilotTask] = useState<string | undefined>(undefined);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
 
   const pollGateway = useCallback(async () => {
@@ -46,6 +47,12 @@ function App() {
     handleTabChange('assistant');
   };
 
+  // The Assistant can hand a workspace coding task to the separate IDE Copilot.
+  const handleDelegateToCopilot = (task: string) => {
+    setCopilotTask(task);
+    handleTabChange('ide');
+  };
+
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#000000] text-[#E4E4E7]">
       {/* Top Nav */}
@@ -70,6 +77,7 @@ function App() {
             onClearInitialPrompt={() => setAssistantPrompt(undefined)}
             settingsOpen={settingsOpen}
             onSettingsOpenChange={setSettingsOpen}
+            onDelegateToCopilot={handleDelegateToCopilot}
           />
         </div>
 
@@ -78,7 +86,11 @@ function App() {
             className={activeTab === 'ide' ? 'flex flex-1 min-w-0 min-h-0' : 'hidden'}
             aria-hidden={activeTab !== 'ide'}
           >
-            <IDEView onAskAssistant={handleAskAssistant} />
+            <IDEView
+              onAskAssistant={handleAskAssistant}
+              initialCopilotTask={copilotTask}
+              onClearInitialCopilotTask={() => setCopilotTask(undefined)}
+            />
           </div>
         )}
       </main>

@@ -32,7 +32,7 @@ import {
   parseReasoningAndAnswer,
   getSettings,
 } from '../../services/chatService';
-import { executeExtensionTool, fetchExtensionTools } from '../../services/extensionService';
+
 import { parseToolCallFromText, stripToolCallsFromText } from '../../utils/toolParser';
 import { OpenTab } from './types';
 
@@ -64,6 +64,8 @@ export interface AgentMessage {
 
 interface SoraAICopilotProps {
   workspaceRoot: string;
+  initialTask?: string;
+  onClearInitialTask?: () => void;
   activeTab?: OpenTab;
   onOpenFile?: (path: string) => void;
   onApplyCodeToEditor: (code: string) => void;
@@ -74,6 +76,8 @@ interface SoraAICopilotProps {
 
 export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
   workspaceRoot,
+  initialTask,
+  onClearInitialTask,
   activeTab,
   onOpenFile,
   onApplyCodeToEditor,
@@ -103,7 +107,7 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
     abortControllerRef.current = null;
   }, []);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
-  const permissionAllowanceRef = useRef<'full_access' | 'sandbox' | 'strict'>('full_access');
+  const permissionAllowanceRef = useRef<'full_access' | 'sandbox' | 'strict'>('strict');
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -152,15 +156,27 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
     args: Record<string, any>
   ): Promise<{ ok: boolean; data?: any; error?: string }> => {
     const startTime = Date.now();
-    const strictMutations = new Set(['write_file', 'create_item', 'rename_item', 'delete_item', 'run_command']);
-    if (permissionAllowanceRef.current === 'strict' && strictMutations.has(tool)) {
+    const mode = permissionAllowanceRef.current;
+    const fileMutationTools = new Set(['write_file', 'create_item', 'rename_item', 'delete_item']);
+    const command = tool === 'run_command' ? String(args.command || '') : '';
+    const packageOrNetworkCommand = /(?:\b(?:npm|pnpm|yarn|bun)\s+(?:install|i|ci|add|update|upgrade|dlx|exec)\b|\bnpx\b|\b(?:pip|pip3)\s+install\b|\bpython(?:3)?\s+-m\s+pip\s+install\b|\b(?:uv\s+add|cargo\s+add|go\s+get)\b|\b(?:curl|wget|invoke-webrequest|iwr|irm)\b|\bgit\s+(?:clone|fetch|pull|submodule\s+update)\b)/i.test(command);
+    const launchesExternalTerminal = /(?:^|[;&|]\s*)(?:start(?:-process)?|wt(?:\.exe)?|cmd(?:\.exe)?\s+\/[ck]|powershell(?:\.exe)?\s+-(?:command|c|file|encodedcommand)\b|explorer(?:\.exe)?|wezterm(?:\.exe)?|gnome-terminal)\b/i.test(command);
+
+    if (mode === 'sandbox' && tool === 'run_command' && launchesExternalTerminal) {
+      return { ok: false, error: 'Sandbox Mode: Copilot can use only the integrated IDE terminal; launching an external terminal or shell is blocked.' };
+    }
+
+    const requiresConfirmation =
+      (mode === 'strict' && (fileMutationTools.has(tool) || tool === 'run_command')) ||
+      (mode === 'sandbox' && (fileMutationTools.has(tool) || packageOrNetworkCommand)) ||
+      (mode === 'full_access' && tool === 'delete_item');
+
+    if (requiresConfirmation) {
       const argsPreview = JSON.stringify(args, null, 2).slice(0, 1600);
       const approved = typeof window !== 'undefined' && window.confirm(
-        `Strict Mode confirmation\\n\\nSora wants to perform "${tool}" with these arguments:\\n\\n${argsPreview}\\n\\nAllow this action?`
+        `${mode.toUpperCase()} mode confirmation\n\nIDE Copilot wants to perform "${tool}" with these arguments:\n\n${argsPreview}\n\nAllow this action?`
       );
-      if (!approved) return { ok: false, error: 'The user declined the Strict Mode confirmation.' };
-      // Existing action-specific checks consume this value. It is assigned only
-      // after the user explicitly approves this request.
+      if (!approved) return { ok: false, error: `The user declined the ${mode} mode confirmation.` };
       args = { ...args, __confirmed: true };
     }
     try {
@@ -340,17 +356,7 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
         };
       }
 
-      // ── Modular Extension Tools Delegation ─────────────────────────────────
-      try {
-        const extRes = await executeExtensionTool(tool, args);
-        if (extRes && (extRes.ok !== undefined || extRes.error !== undefined)) {
-          return extRes;
-        }
-      } catch (extErr: any) {
-        return { ok: false, error: extErr?.message || `Extension tool execution failed: ${tool}` };
-      }
-
-      return { ok: false, error: `Unknown tool: ${tool}` };
+      return { ok: false, error: `Unknown IDE workspace tool: ${tool}` };
     } catch (err: any) {
       return { ok: false, error: err.message || 'Tool execution error' };
     } finally {
@@ -373,22 +379,14 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
       const currentImage = attachedImage;
       setAttachedImage(null);
 
-      let extensionToolsPrompt = '';
-      try {
-        const extData = await fetchExtensionTools();
-        if (extData && extData.promptFormat) {
-          extensionToolsPrompt = '\n\n' + extData.promptFormat;
-        }
-      } catch {}
-
-      let currentAllowance = 'full_access';
+      let currentAllowance: 'full_access' | 'sandbox' | 'strict' = 'strict';
       try {
         const s = await getSettings();
-        if (s.permissionAllowance) {
-          currentAllowance = s.permissionAllowance;
+        if (s.copilotSecurityMode) {
+          currentAllowance = s.copilotSecurityMode;
         }
       } catch {}
-      permissionAllowanceRef.current = currentAllowance as any;
+      permissionAllowanceRef.current = currentAllowance;
 
       const userDisplayPrompt = currentImage
         ? `${taskPrompt || 'Analyze this attached image'}\n[Attached Image: ${currentImage.name}]`
@@ -410,12 +408,16 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
         content: `You are Sora AI Autonomous Agent, embedded in the user's workspace on Windows.
 Active Workspace Root: "${workspaceRoot}".
 Active File: "${activeTab ? activeTab.path : 'None'}".
-Permission Allowance Mode: ${currentAllowance.toUpperCase()}.
+IDE COPILOT SECURITY MODE: ${currentAllowance.toUpperCase()}.
 
-You have FULL WORKSPACE FREEDOM and TERMINAL FREEDOM:
-- You can inspect, read, create, edit, rename, and delete files/folders across all subfolders.
-- You can run terminal commands (npm test, npm install, build scripts, git commands, python, etc.) to debug and build autonomously.
-- Retain safeguards against catastrophic system wipes.
+You are the IDE-only Copilot, a separate entity from the Sora Assistant.
+- Stay within the active workspace: "${workspaceRoot}". Use ONLY the IDE workspace tools and the IDE integrated terminal.
+- NEVER invoke or offer external extensions, desktop automation, external-terminal launches, or unrelated system tools. For tasks outside this workspace, provide a short explanation that the Sora Assistant can handle outside tasks.
+- Read, inspect, search, and analyze workspace files freely without asking.
+- STRICT: ask the user before EVERY terminal command and before every file create, edit, rename, or delete.
+- SANDBOX: ordinary commands may run in the integrated IDE terminal. Ask before every file create, edit, rename, or delete, and before package downloads/installs or network-fetch commands. Do not launch an external terminal. Keep actions scoped to this workspace.
+- FULL_ACCESS: work autonomously in this workspace, including installing packages, running tests, and builds; ask before deleting any file or folder.
+- Preserve catastrophe safeguards in every mode. Never run a command unless the active workspace is selected.
 - NEVER pretend, guess, or hallucinate files. Always use tools to verify real files.
 - Built-in capabilities (memory search, recall, storage) are automatic internal background systems, not tools.
 - Never mention, compare, or reference other AI assistants, IDE agents, IDE products, or competitors by name. Describe Sora's capabilities directly.
@@ -452,7 +454,7 @@ When you need to perform an action, output only one tool call formatted exactly 
 
 After you output a <tool_call>, STOP and wait for the system to execute it.
 You will receive the tool result in a <tool_result> block.
-When completely finished, provide your final answer with no further tool calls.` + extensionToolsPrompt,
+When completely finished, provide your final answer with no further tool calls.`,
       };
 
       const userPayloadContent: ChatMessage['content'] = currentImage
@@ -623,6 +625,15 @@ When completely finished, provide your final answer with no further tool calls.`
     ]
   );
 
+  // A delegated task waits for a real IDE workspace, then starts under the selected security mode.
+  useEffect(() => {
+    if (!initialTask?.trim()) return;
+    setUserInput(initialTask);
+    if (!workspaceRoot.trim() || isAgentRunning) return;
+    onClearInitialTask?.();
+    void runAgentTask(initialTask);
+  }, [initialTask, workspaceRoot, isAgentRunning, runAgentTask, onClearInitialTask]);
+
   const handleStopAgent = () => {
     isAgentActiveRef.current = false;
     if (abortControllerRef.current) {
@@ -678,11 +689,11 @@ When completely finished, provide your final answer with no further tool calls.`
           <div className="flex flex-col">
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-bold text-white tracking-wider">
-                SORA AGENT
+                SORA COPILOT
               </span>
               <span className="flex items-center gap-1 px-1.5 py-0.2 rounded text-[9px] font-mono bg-[#00D99A]/15 text-[#00D99A] border border-[#00D99A]/30">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#00D99A] animate-pulse" />
-                AUTONOMOUS
+                IDE ONLY
               </span>
             </div>
           </div>

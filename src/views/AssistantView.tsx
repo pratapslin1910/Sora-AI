@@ -6,6 +6,7 @@ interface AssistantViewProps {
   onClearInitialPrompt?: () => void;
   settingsOpen?: boolean;
   onSettingsOpenChange?: (open: boolean) => void;
+  onDelegateToCopilot?: (task: string) => void;
 }
 
 export const AssistantView: React.FC<AssistantViewProps> = ({
@@ -13,6 +14,7 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
   onClearInitialPrompt,
   settingsOpen,
   onSettingsOpenChange,
+  onDelegateToCopilot,
 }) => {
   return (
     <div className="flex-1 w-full h-full overflow-hidden bg-[#080808]">
@@ -21,6 +23,7 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
         onClearInitialPrompt={onClearInitialPrompt}
         settingsOpen={settingsOpen}
         onSettingsOpenChange={onSettingsOpenChange}
+        onDelegateToCopilot={onDelegateToCopilot}
       />
     </div>
   );

@@ -28,7 +28,7 @@ import {
   detectAndExtractMemories,
   recallContextForQuery,
 } from './memoryStore.js';
-import { buildSystemPrompt, SORA_PROMPT_VERSION } from './systemPrompt.js';
+import { buildSystemPrompt, resolveConflictingMemories, SORA_PROMPT_VERSION } from './systemPrompt.js';
 import { parseReasoningAndAnswer } from './responseParser.js';
 
 import { fileURLToPath } from 'node:url';
@@ -656,6 +656,7 @@ export async function handleApiRequest(req, res, customProvider) {
         ? Math.max(0, Math.min(3650, Number(saved.chatRetentionDays)))
         : DEFAULT_CHAT_RETENTION_DAYS,
       permissionAllowance: saved.permissionAllowance || 'full_access',
+      copilotSecurityMode: ['full_access', 'sandbox', 'strict'].includes(saved.copilotSecurityMode) ? saved.copilotSecurityMode : 'strict',
       systemPromptVersion: SORA_PROMPT_VERSION,
       defaultIdentity: 'Sora',
     });
@@ -688,6 +689,9 @@ export async function handleApiRequest(req, res, customProvider) {
       permissionAllowance: ['full_access', 'sandbox', 'strict'].includes(body.permissionAllowance)
         ? body.permissionAllowance
         : (current.permissionAllowance || 'full_access'),
+      copilotSecurityMode: ['full_access', 'sandbox', 'strict'].includes(body.copilotSecurityMode)
+        ? body.copilotSecurityMode
+        : (['full_access', 'sandbox', 'strict'].includes(current.copilotSecurityMode) ? current.copilotSecurityMode : 'strict'),
     };
     saveSettings(updated);
     if (extensionManagerInitialized) {
@@ -761,16 +765,50 @@ export async function handleApiRequest(req, res, customProvider) {
     // Build centralized, versioned system prompt adhering to strict 4-tier hierarchy
     await ensureExtensionManager();
     const settings = loadSettings();
-    const permissionAllowance = settings.permissionAllowance || 'full_access';
-    extensionManager.permissionManager.setAllowanceMode(permissionAllowance);
+    const assistantPermissionAllowance = settings.permissionAllowance || 'full_access';
+    const isIdeCopilotRequest = /IDE COPILOT SECURITY MODE:/i.test(clientSystemPrompt);
+    const copilotSecurityMode = ['full_access', 'sandbox', 'strict'].includes(settings.copilotSecurityMode)
+      ? settings.copilotSecurityMode
+      : 'strict';
+    const permissionAllowance = isIdeCopilotRequest ? copilotSecurityMode : assistantPermissionAllowance;
+    // Extension permissions belong to the Assistant and must not inherit Copilot mode.
+    extensionManager.permissionManager.setAllowanceMode(assistantPermissionAllowance);
 
-    // If clientSystemPrompt didn't already supply tools prompt, inject all active extension tools
+    // IDE Copilot and Sora Assistant are separate agents. Only the Assistant receives
+    // the app-internal hand-off tool; Copilot gets workspace tools from its own prompt.
+    const assistantDelegationToolPrompt = isIdeCopilotRequest ? '' : [
+      'SORA APP TASK-HANDOFF TOOL:',
+      'Use delegate_to_copilot only when the user asks for a code change, debugging, testing, or implementation that belongs in the currently opened IDE workspace.',
+      'This tool hands a specific task to the separate IDE Copilot. It does not itself edit files.',
+      'Tool call format:',
+      '<tool_call>',
+      '{"tool":"delegate_to_copilot","args":{"task":"A clear, actionable workspace coding task, including acceptance criteria"}}',
+      '</tool_call>',
+      'Do not use this tool for web research, general questions, or tasks outside the code workspace. If the user only asked for advice, answer directly.'
+    ].join('\n');
     const toolsPrompt = clientSystemPrompt.includes('AVAILABLE TOOLS:')
       ? ''
-      : extensionManager.toolRegistry.formatToolsForPrompt();
+      : extensionManager.toolRegistry.formatToolsForPrompt() + (assistantDelegationToolPrompt ? '\n\n' + assistantDelegationToolPrompt : '');
+
+    // Keep explicit saved user instructions/preferences available on every request,
+    // even when they are not semantically close to the latest question.
+    // Identity-conflicting memory text is neutralized before prompt injection.
+    const preferenceTags = new Set(['preference', 'user-preference', 'personal-preference', 'communication-preference', 'response-style', 'language-preference', 'user-profile']);
+    const savedPreferenceMemories = resolveConflictingMemories(listMemories().filter((memory) => {
+      const tags = Array.isArray(memory.tags) ? memory.tags.map((tag) => String(tag).toLowerCase()) : String(memory.tags || '').split(',').map((tag) => tag.trim().toLowerCase());
+      const markedAsPreference = tags.some((tag) => preferenceTags.has(tag));
+      const preferenceText = String(memory.title || '') + ' ' + String(memory.content || '');
+      const preferenceTitle = /user.?preferences?|personal preferences?|communication preferences?|response style|language preferences?|user profile/i.test(String(memory.title || ''));
+      const explicitPreference = /\b(?:i prefer|my preference|user prefers?|personal preference|communication preference|response style|language preference|always (?:respond|reply|use|speak|keep)|never (?:respond|reply|use)|(?:respond|reply) (?:only )?(?:in|using)|speak (?:only )?(?:in|using)|prefer(?:s)? to|keep (?:answers|responses|replies) (?:short|concise)|use (?:hinglish|hindi|english))\b/i.test(preferenceText);
+      return memory.type === 'instruction' || markedAsPreference || preferenceTitle || explicitPreference;
+    })).slice(0, 40);
+    const userPreferences = savedPreferenceMemories
+      .map((memory) => `- [${memory.title || 'Saved instruction'}]: ${memory.content}`)
+      .join('\n');
 
     const centralizedSystemPrompt = buildSystemPrompt({
       clientSystemPrompt,
+      userPreferences,
       recalledContext: recalledData?.formattedContext || '',
       currentModel: model || provider.defaultModel || 'auto',
       toolsPrompt,

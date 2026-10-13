@@ -217,9 +217,10 @@ export interface SoraChatProps {
   onClearInitialPrompt?: () => void;
   settingsOpen?: boolean;
   onSettingsOpenChange?: (open: boolean) => void;
+  onDelegateToCopilot?: (task: string) => void;
 }
 
-const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, onSettingsOpenChange = () => {} }: SoraChatProps = {}) => {
+const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, onSettingsOpenChange = () => {}, onDelegateToCopilot }: SoraChatProps = {}) => {
   const [messages, setMessages] = useState<MessageWithThinking[]>([]);
   const [input, setInput] = useState('');
 
@@ -521,6 +522,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
   const [autoDeleteChats, setAutoDeleteChats] = useState(false);
   const [chatRetentionDays, setChatRetentionDays] = useState(30);
   const [permissionAllowance, setPermissionAllowance] = useState<'full_access' | 'sandbox' | 'strict'>('full_access');
+  const [copilotSecurityMode, setCopilotSecurityMode] = useState<'full_access' | 'sandbox' | 'strict'>('strict');
   const [historyDeleting, setHistoryDeleting] = useState(false);
   const [historyActionMsg, setHistoryActionMsg] = useState<{ text: string; error?: boolean } | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
@@ -537,6 +539,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
       setAutoDeleteChats(Boolean(s.autoDeleteChats));
       setChatRetentionDays(Math.max(1, Number(s.chatRetentionDays) || 30));
       setPermissionAllowance(s.permissionAllowance || 'full_access');
+      setCopilotSecurityMode(s.copilotSecurityMode || 'strict');
     } catch {
       // ignore
     }
@@ -559,6 +562,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
         autoDeleteChats,
         chatRetentionDays,
         permissionAllowance,
+        copilotSecurityMode,
       });
       if (ok) {
         setSettingsSaveMsg({ text: 'Settings saved successfully.' });
@@ -1165,27 +1169,40 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
 
               let toolRes: any;
               try {
-                toolRes = await executeExtensionTool(toolCall.tool, toolCall.args, {
-                  signal: abortController.signal,
-                });
-                if (toolRes?.requiresConfirmation && toolRes?.confirmationToken) {
-                  const argsPreview = JSON.stringify(toolCall.args, null, 2).slice(0, 1600);
-                  const approved = typeof window !== 'undefined' && window.confirm(
-                    `Strict Mode confirmation\\n\\nSora wants to run "${toolCall.tool}" with these arguments:\\n\\n${argsPreview}\\n\\nAllow this action?`
-                  );
-                  if (approved && !abortController.signal.aborted) {
-                    toolRes = await executeExtensionTool(toolCall.tool, toolCall.args, {
-                      signal: abortController.signal,
-                      confirmationToken: toolRes.confirmationToken,
-                    });
+                if (toolCall.tool === 'delegate_to_copilot') {
+                  const delegatedTask = typeof toolCall.args?.task === 'string' ? toolCall.args.task.trim() : '';
+                  if (!delegatedTask) {
+                    toolRes = { ok: false, error: 'A non-empty Copilot task is required.' };
+                  } else if (!onDelegateToCopilot) {
+                    toolRes = { ok: false, error: 'IDE Copilot hand-off is not available in this app session.' };
+                  } else if (abortController.signal.aborted) {
+                    toolRes = { ok: false, error: 'The hand-off was cancelled.' };
                   } else {
-                    toolRes = { ok: false, error: 'The user declined the confirmation.' };
+                    onDelegateToCopilot(delegatedTask);
+                    toolRes = { ok: true, data: { delegated: true, target: 'IDE Copilot', task: delegatedTask } };
+                  }
+                } else {
+                  toolRes = await executeExtensionTool(toolCall.tool, toolCall.args, {
+                    signal: abortController.signal,
+                  });
+                  if (toolRes?.requiresConfirmation && toolRes?.confirmationToken) {
+                    const argsPreview = JSON.stringify(toolCall.args, null, 2).slice(0, 1600);
+                    const approved = typeof window !== 'undefined' && window.confirm(
+                      'Tool confirmation\n\nSora wants to run "' + toolCall.tool + '" with these arguments:\n\n' + argsPreview + '\n\nAllow this action?'
+                    );
+                    if (approved && !abortController.signal.aborted) {
+                      toolRes = await executeExtensionTool(toolCall.tool, toolCall.args, {
+                        signal: abortController.signal,
+                        confirmationToken: toolRes.confirmationToken,
+                      });
+                    } else {
+                      toolRes = { ok: false, error: 'The user declined the confirmation.' };
+                    }
                   }
                 }
               } catch (err: any) {
                 toolRes = { ok: false, error: err?.message || 'Tool execution failed' };
               }
-
               // A running tool may not support cancellation, but never start the next
               // tool or a follow-up generation after the user has stopped this turn.
               if (abortController.signal.aborted) return;
@@ -1600,18 +1617,8 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
           })()}
         </div>
 
-        {/* Settings shortcut */}
+        {/* Gateway model and connection status; Settings is in the Profile menu. */}
         <div className="p-2.5 border-t border-[#222222] bg-[#0c0c0c] shrink-0 space-y-2">
-          <div>
-            <button
-              onClick={() => onSettingsOpenChange(true)}
-              className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#141414] hover:bg-[#1a1a1a] border border-[#27272a] hover:border-[#383838] transition-all group"
-            >
-              <SettingsIcon sx={{ fontSize: 15 }} className="text-[#A1A1AA] group-hover:text-white flex-shrink-0" />
-              <span className="text-xs text-[#D4D4D8] font-medium group-hover:text-white">Settings</span>
-            </button>
-          </div>
-
           <div className="flex items-center justify-between px-1 text-[10px] font-mono-terminal text-[#71717A]">
             <div className="flex items-center gap-1.5">
               <span className={`w-1.5 h-1.5 rounded-full ${gatewayStatus.ok ? 'bg-[#00D99A]' : 'bg-[#FF981F]'}`} />
@@ -2427,10 +2434,10 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                 <div>
                   <h4 className="text-xs font-semibold text-white flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
-                    Permission Allowance (Security Policy)
+                    Sora Assistant Tool Security
                   </h4>
                   <p className="text-[11px] text-slate-400 mt-0.5">
-                    Controls autonomous tool execution for both SORA Assistant chat and IDE Copilot.
+                    Controls Sora Assistant's external extensions and system tools only. IDE Copilot has its own workspace security mode below.
                   </p>
                 </div>
                 <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider ${
@@ -2502,6 +2509,33 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                   </p>
                 </button>
               </div>
+            </div>
+
+            <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4 space-y-3">
+              <div>
+                <h4 className="text-xs font-semibold text-white">IDE Copilot Security Mode</h4>
+                <p className="text-[11px] text-slate-400 mt-1">Applies only to the workspace-bound IDE Copilot. Copilot uses the integrated IDE terminal and does not run Assistant extensions.</p>
+              </div>
+              <select
+                aria-label="IDE Copilot Security Mode"
+                value={copilotSecurityMode}
+                onChange={(e) => setCopilotSecurityMode(e.target.value as 'full_access' | 'sandbox' | 'strict')}
+                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500/60"
+              >
+                <option value="strict">Strict — confirm every command and file change</option>
+                <option value="sandbox">Sandbox — workspace commands allowed; confirm file changes and package/network installs</option>
+                <option value="full_access">Full Access — autonomous IDE work; confirm deletions</option>
+              </select>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                {copilotSecurityMode === 'strict'
+                  ? 'Copilot may read and analyze freely, but must ask before every terminal command and every file create, edit, rename, or delete.'
+                  : copilotSecurityMode === 'sandbox'
+                  ? 'Copilot may run ordinary commands in the integrated terminal. It must ask before changing files, downloading/installing packages, or using network-download commands.'
+                  : 'Copilot may edit files, install packages, run tests, and build autonomously inside the active workspace. Deleting files or folders still requires confirmation.'}
+              </p>
+              <p className="text-[10px] text-slate-500 leading-relaxed">
+                Sandbox mode applies Sora's command and workspace checks at the application level; it is not an OS/container isolation boundary, so arbitrary project scripts can still access files allowed to your Windows account.
+              </p>
             </div>
 
             {/* Status / Message */}

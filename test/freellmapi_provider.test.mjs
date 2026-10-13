@@ -5,6 +5,11 @@ import { FreeLLMAPIProvider } from '../src/server/FreeLLMAPIProvider.js';
 import { handleApiRequest } from '../src/server/apiRouter.js';
 
 describe('FreeLLMAPIProvider Unit & Mock Tests', () => {
+  it('uses a three-minute default timeout while allowing explicit overrides', () => {
+    assert.equal(new FreeLLMAPIProvider().timeoutMs, 180000);
+    assert.equal(new FreeLLMAPIProvider({ timeoutMs: 2500 }).timeoutMs, 2500);
+  });
+
   let mockServer;
   let mockPort;
   let mockBaseUrl;

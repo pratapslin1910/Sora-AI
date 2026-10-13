@@ -25,14 +25,14 @@ export class FreeLLMAPIProvider {
    * @param {string} [config.baseUrl] Gateway base URL (defaults to process.env.FREELLMAPI_BASE_URL or http://127.0.0.1:31415/v1)
    * @param {string} [config.apiKey] API key (defaults to process.env.FREELLMAPI_API_KEY)
    * @param {string} [config.model] Default model (defaults to process.env.FREELLMAPI_MODEL or 'auto')
-   * @param {number} [config.timeoutMs] Request timeout in ms (default 60000)
+   * @param {number} [config.timeoutMs] Request timeout in ms (default 180000; override with config.timeoutMs)
    */
   constructor(config = {}) {
     const rawUrl = config.baseUrl || process.env.FREELLMAPI_BASE_URL || 'http://127.0.0.1:31415/v1';
     this.baseUrl = rawUrl.replace(/\/+$/, '');
     this.apiKey = config.apiKey !== undefined ? config.apiKey : (process.env.FREELLMAPI_API_KEY || '');
     this.defaultModel = config.model || process.env.FREELLMAPI_MODEL || 'auto';
-    this.timeoutMs = config.timeoutMs || 60000;
+    this.timeoutMs = config.timeoutMs || 180000;
   }
 
   /**

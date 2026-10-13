@@ -48,9 +48,15 @@ import {
 
 interface IDEViewProps {
   onAskAssistant?: (prompt: string) => void;
+  initialCopilotTask?: string;
+  onClearInitialCopilotTask?: () => void;
 }
 
-export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
+export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant, initialCopilotTask, onClearInitialCopilotTask }) => {
+  useEffect(() => {
+    if (initialCopilotTask?.trim()) setCopilotOpen(true);
+  }, [initialCopilotTask]);
+
   // ── Workspace & Files State ──────────────────────────────────────────────
   const [workspaceRoot, setWorkspaceRoot] = useState<string>('');
   const [workspaceSelected, setWorkspaceSelected] = useState<boolean>(false);
@@ -874,6 +880,8 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
       {copilotOpen && (
         <SoraAICopilot
           workspaceRoot={workspaceRoot}
+          initialTask={initialCopilotTask}
+          onClearInitialTask={onClearInitialCopilotTask}
           activeTab={activeTab}
           onOpenFile={(filePath) => {
             handleOpenFile({
