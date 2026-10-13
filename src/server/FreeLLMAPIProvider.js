@@ -406,6 +406,13 @@ export class FreeLLMAPIProvider {
 
             try {
               const chunkJson = JSON.parse(dataStr);
+              if (chunkJson?.error) {
+                const upstreamMessage = typeof chunkJson.error === 'string'
+                  ? chunkJson.error
+                  : (chunkJson.error.message || chunkJson.message || 'FreeLLMAPI returned a streaming error.');
+                await onError(new Error(this.formatError(new Error(upstreamMessage))));
+                return fullText;
+              }
               if (chunkJson?.model) await reportModel(chunkJson.model);
               const delta = chunkJson?.choices?.[0]?.delta;
               if ((delta?.reasoning_content || delta?.reasoning || delta?.content) && !reportedModel) {
@@ -436,6 +443,13 @@ export class FreeLLMAPIProvider {
           if (dataStr !== '[DONE]') {
             try {
               const chunkJson = JSON.parse(dataStr);
+              if (chunkJson?.error) {
+                const upstreamMessage = typeof chunkJson.error === 'string'
+                  ? chunkJson.error
+                  : (chunkJson.error.message || chunkJson.message || 'FreeLLMAPI returned a streaming error.');
+                await onError(new Error(this.formatError(new Error(upstreamMessage))));
+                return fullText;
+              }
               if (chunkJson?.model) await reportModel(chunkJson.model);
               const delta = chunkJson?.choices?.[0]?.delta;
               if ((delta?.reasoning_content || delta?.reasoning || delta?.content) && !reportedModel) {
