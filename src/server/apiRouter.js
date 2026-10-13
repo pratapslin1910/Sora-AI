@@ -707,7 +707,7 @@ export async function handleApiRequest(req, res, customProvider) {
       return true;
     }
 
-    const { messages, model, stream = true, temperature, recallMemory = true, currentChatId, taskType = 'assistant' } = body;
+    const { messages, model, stream = true, temperature, recallMemory = true, currentChatId, taskType = 'reasoning' } = body;
 
     if (!messages || !Array.isArray(messages)) {
       jsonResponse(res, 400, { error: 'Missing or invalid "messages" in request body.' });

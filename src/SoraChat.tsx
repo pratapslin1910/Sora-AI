@@ -1050,7 +1050,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
       messagesToSend,
       {
         signal: abortController.signal,
-        taskType: imageFiles.length > 0 ? 'vision' : 'assistant',
+        taskType: imageFiles.length > 0 ? 'vision' : 'reasoning',
         recallMemory: true,
         currentChatId: activeChatIdRef.current,
         onRecall: (recalled) => {

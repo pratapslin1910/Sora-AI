@@ -124,7 +124,7 @@ export interface RecalledContextPayload {
 
 export interface StreamChatOptions {
   model?: string;
-  taskType?: 'assistant' | 'coding' | 'research' | 'vision' | 'terminal' | 'other';
+  taskType?: 'reasoning' | 'assistant' | 'coding' | 'research' | 'vision' | 'terminal' | 'other';
   signal?: AbortSignal;
   recallMemory?: boolean;
   currentChatId?: string | null;
@@ -142,7 +142,7 @@ export async function streamChatMessage(
 ): Promise<void> {
   const {
     model,
-    taskType = 'assistant',
+    taskType = 'reasoning',
     signal,
     recallMemory = true,
     currentChatId = null,

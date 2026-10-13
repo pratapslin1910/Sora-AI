@@ -64,6 +64,12 @@ describe('FreeLLMAPIProvider Unit & Mock Tests', () => {
               res.end();
               return;
             }
+            if (parsed.model === 'actual-model-test') {
+              res.write('data: {"model":"resolved-model-v2","choices":[{"delta":{"content":"Model identified"}}]}\\n\\n');
+              res.write('data: [DONE]\\n\\n');
+              res.end();
+              return;
+            }
             // Send reasoning chunk (which should be skipped from content)
             res.write('data: {"choices":[{"delta":{"reasoning_content":"Thinking..."}}]}\n\n');
             // Send content tokens
@@ -207,6 +213,23 @@ describe('FreeLLMAPIProvider Unit & Mock Tests', () => {
     assert.equal(completed, true);
     assert.deepEqual(tokens, ['Hello', ' world!']);
     assert.equal(fullText, 'Hello world!');
+  });
+
+  it('reports the actual model returned by the streaming provider', async () => {
+    const provider = new FreeLLMAPIProvider({
+      baseUrl: mockBaseUrl,
+      apiKey: 'valid_key',
+      model: 'actual-model-test',
+    });
+    const models = [];
+    const fullText = await provider.streamChat({
+      messages: [{ role: 'user', content: 'Which model?' }],
+      onModel: (model) => models.push(model),
+      onToken: () => {},
+    });
+    assert.equal(fullText, 'Model identified');
+    assert.ok(models.includes('actual-model-test'));
+    assert.ok(models.includes('resolved-model-v2'));
   });
 
   it('filters inline tagged content across delta boundaries', async () => {
