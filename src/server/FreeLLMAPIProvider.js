@@ -354,7 +354,8 @@ export class FreeLLMAPIProvider {
     };
 
     try {
-      await reportModel(chosenModel);
+      // Do not report the requested model as active before the gateway accepts it.
+      // In Auto mode the actual upstream model is only known from response chunks.
       const res = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -405,8 +406,23 @@ export class FreeLLMAPIProvider {
 
             try {
               const chunkJson = JSON.parse(dataStr);
+              if (chunkJson?.error) {
+                const upstreamMessage = typeof chunkJson.error === 'string'
+                  ? chunkJson.error
+                  : (chunkJson.error.message || chunkJson.message || 'FreeLLMAPI returned a streaming error.');
+                await onError(new Error(this.formatError(new Error(upstreamMessage))));
+                return fullText;
+              }
               if (chunkJson?.model) await reportModel(chunkJson.model);
               const delta = chunkJson?.choices?.[0]?.delta;
+              if ((delta?.reasoning_content || delta?.reasoning || delta?.content) && !reportedModel) {
+                // A successful chunk confirms that the gateway accepted the request.
+                // If no actual model ID is returned, report the routing mode instead
+                // of a guessed model from /models.
+                await reportModel(chosenModel.toLowerCase() === 'auto'
+                  ? 'FreeLLMAPI Auto'
+                  : chosenModel + ' (gateway response confirmed; actual ID not reported)');
+              }
               if (delta?.reasoning_content || delta?.reasoning) {
                 const rChunk = delta.reasoning_content || delta.reasoning;
                 await onReasoning(rChunk);
@@ -427,8 +443,23 @@ export class FreeLLMAPIProvider {
           if (dataStr !== '[DONE]') {
             try {
               const chunkJson = JSON.parse(dataStr);
+              if (chunkJson?.error) {
+                const upstreamMessage = typeof chunkJson.error === 'string'
+                  ? chunkJson.error
+                  : (chunkJson.error.message || chunkJson.message || 'FreeLLMAPI returned a streaming error.');
+                await onError(new Error(this.formatError(new Error(upstreamMessage))));
+                return fullText;
+              }
               if (chunkJson?.model) await reportModel(chunkJson.model);
               const delta = chunkJson?.choices?.[0]?.delta;
+              if ((delta?.reasoning_content || delta?.reasoning || delta?.content) && !reportedModel) {
+                // A successful chunk confirms that the gateway accepted the request.
+                // If no actual model ID is returned, report the routing mode instead
+                // of a guessed model from /models.
+                await reportModel(chosenModel.toLowerCase() === 'auto'
+                  ? 'FreeLLMAPI Auto'
+                  : chosenModel + ' (gateway response confirmed; actual ID not reported)');
+              }
               if (delta?.reasoning_content || delta?.reasoning) {
                 const rChunk = delta.reasoning_content || delta.reasoning;
                 await onReasoning(rChunk);
