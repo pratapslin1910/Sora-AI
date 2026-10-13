@@ -4,6 +4,8 @@
  * Encapsulates authentication, model discovery, error normalization, and streaming.
  */
 
+import { getConcreteModelIds, getReadyModelIds } from './modelRouting.js';
+
 export class FreeLLMAPIProvider {
   /**
    * @param {Object} [config]
@@ -15,7 +17,7 @@ export class FreeLLMAPIProvider {
   constructor(config = {}) {
     const rawUrl = config.baseUrl || process.env.FREELLMAPI_BASE_URL || 'http://127.0.0.1:31415/v1';
     this.baseUrl = rawUrl.replace(/\/+$/, '');
-    this.apiKey = config.apiKey !== undefined ? config.apiKey : (process.env.FREELLMAPI_API_KEY || '');
+    this.apiKey = String(config.apiKey !== undefined ? config.apiKey : (process.env.FREELLMAPI_API_KEY || '')).trim();
     this.defaultModel = config.model || process.env.FREELLMAPI_MODEL || 'auto';
     this.timeoutMs = config.timeoutMs || 60000;
   }
@@ -106,34 +108,66 @@ export class FreeLLMAPIProvider {
   }
 
   /**
-   * Retrieve list of models from FreeLLMAPI
+   * Retrieve FreeLLMAPI's model catalogue. The upstream exposes a full catalogue
+   * plus filters for ready/available models; never infer availability from an ID.
+   * @param {{ filter?: 'ready'|'available' }} [options]
+   * @returns {Promise<Array<object>>}
+   */
+  async getModelCatalogue({ filter = '' } = {}) {
+    const query = filter === 'ready'
+      ? '?execution_status=ready'
+      : filter === 'available'
+        ? '?available=true'
+        : '';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(this.timeoutMs, 10000));
+
+    let res;
+    try {
+      res = await fetch(`${this.baseUrl}/models${query}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Failed to fetch models (${res.status}): ${text}`);
+    }
+
+    const data = await res.json();
+    if (!Array.isArray(data?.data)) {
+      throw new Error('FreeLLMAPI returned an invalid model catalogue.');
+    }
+    return data.data;
+  }
+
+  /**
+   * Return concrete model IDs. For selection, query live readiness and use the
+   * legacy availability filter only when the current FreeLLMAPI version lacks
+   * readiness metadata. Router aliases (auto, fusion, auto:*) are never concrete.
+   * @param {{ readyOnly?: boolean }} [options]
    * @returns {Promise<string[]>}
    */
-  async getModels() {
+  async getModels({ readyOnly = false } = {}) {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), Math.min(this.timeoutMs, 10000));
-
-      let res;
-      try {
-        res = await fetch(`${this.baseUrl}/models`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${this.apiKey}`,
-          },
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(timer);
+      if (!readyOnly) {
+        return getConcreteModelIds(await this.getModelCatalogue());
       }
 
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Failed to fetch models (${res.status}): ${text}`);
-      }
+      const readyCatalogue = await this.getModelCatalogue({ filter: 'ready' });
+      const readyModels = getReadyModelIds(readyCatalogue);
+      if (readyModels.length > 0) return readyModels;
 
-      const data = await res.json();
-      return Array.isArray(data?.data) ? data.data.map((m) => m.id) : [];
+      // Backward compatibility: older releases support available=true but may
+      // not return execution_status. Unknown/exhausted statuses are not accepted.
+      const availableCatalogue = await this.getModelCatalogue({ filter: 'available' });
+      return getReadyModelIds(availableCatalogue);
     } catch (err) {
       throw new Error(this.formatError(err));
     }
@@ -291,6 +325,9 @@ export class FreeLLMAPIProvider {
         }
         throw new Error(errMsg);
       }
+
+      const routedVia = res.headers.get('x-routed-via');
+      if (routedVia) onRoutedVia(routedVia);
 
       if (!res.body) {
         throw new Error('Response body is null, cannot stream.');
