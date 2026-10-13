@@ -797,8 +797,10 @@ export async function handleApiRequest(req, res, customProvider) {
     const savedPreferenceMemories = resolveConflictingMemories(listMemories().filter((memory) => {
       const tags = Array.isArray(memory.tags) ? memory.tags.map((tag) => String(tag).toLowerCase()) : String(memory.tags || '').split(',').map((tag) => tag.trim().toLowerCase());
       const markedAsPreference = tags.some((tag) => preferenceTags.has(tag));
+      const preferenceText = String(memory.title || '') + ' ' + String(memory.content || '');
       const preferenceTitle = /user.?preferences?|personal preferences?|communication preferences?|response style|language preferences?|user profile/i.test(String(memory.title || ''));
-      return memory.type === 'instruction' || markedAsPreference || preferenceTitle;
+      const explicitPreference = /\b(?:i prefer|my preference|user prefers?|personal preference|communication preference|response style|language preference|always (?:respond|reply|use|speak|keep)|never (?:respond|reply|use)|(?:respond|reply) (?:only )?(?:in|using)|speak (?:only )?(?:in|using)|prefer(?:s)? to|keep (?:answers|responses|replies) (?:short|concise)|use (?:hinglish|hindi|english))\b/i.test(preferenceText);
+      return memory.type === 'instruction' || markedAsPreference || preferenceTitle || explicitPreference;
     })).slice(0, 40);
     const userPreferences = savedPreferenceMemories
       .map((memory) => `- [${memory.title || 'Saved instruction'}]: ${memory.content}`)
