@@ -1603,12 +1603,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
           })()}
         </div>
 
-        {/* Settings shortcut */}
-        <div className="p-2.5 border-t border-[#222222] bg-[#0c0c0c] shrink-0 space-y-2">
-          <div>
-
-          </div>
-
+        {/* Gateway model and connection status; Settings is in the Profile menu. */}
           <div className="flex items-center justify-between px-1 text-[10px] font-mono-terminal text-[#71717A]">
             <div className="flex items-center gap-1.5">
               <span className={`w-1.5 h-1.5 rounded-full ${gatewayStatus.ok ? 'bg-[#00D99A]' : 'bg-[#FF981F]'}`} />
@@ -2424,7 +2419,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                 <div>
                   <h4 className="text-xs font-semibold text-white flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
-                    Permission Allowance (Security Policy)
+                    Sora Assistant Tool Security
                   </h4>
                   <p className="text-[11px] text-slate-400 mt-0.5">
                     Controls Sora Assistant's external extensions and system tools only. IDE Copilot has its own workspace security mode below.
