@@ -67,10 +67,10 @@ interface SoraAICopilotProps {
   initialTask?: string;
   onClearInitialTask?: () => void;
   activeTab?: OpenTab;
-  onOpenFile?: (path: string) => void;
+  onOpenFile?: (path: string) => void | Promise<void>;
   onApplyCodeToEditor: (code: string) => void;
   onRunTerminalCommand: (command: string) => Promise<any>;
-  onRefreshExplorer: () => void;
+  onRefreshExplorer: () => void | Promise<void>;
   onClose?: () => void;
 }
 
@@ -226,16 +226,18 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
         if (!path) return { ok: false, error: 'Path argument is required' };
         const res = await writeWorkspaceFile(path, content);
         if (res.ok) {
-          onRefreshExplorer();
+          // Wait for the explorer and any already-open clean tab to synchronize
+          // before reporting the write operation as finished.
+          await onRefreshExplorer();
           if (onOpenFile) {
-            onOpenFile(path);
+            await onOpenFile(path);
           }
           return {
             ok: true,
             data: {
               path,
               savedAt: res.savedAt,
-              message: `File written successfully (${content.length} chars).`,
+              message: `File written successfully (${content.length} chars); editor synchronized.`,
             },
           };
         }
