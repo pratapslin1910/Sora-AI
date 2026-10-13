@@ -521,6 +521,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
   const [autoDeleteChats, setAutoDeleteChats] = useState(false);
   const [chatRetentionDays, setChatRetentionDays] = useState(30);
   const [permissionAllowance, setPermissionAllowance] = useState<'full_access' | 'sandbox' | 'strict'>('full_access');
+  const [copilotSecurityMode, setCopilotSecurityMode] = useState<'full_access' | 'sandbox' | 'strict'>('strict');
   const [historyDeleting, setHistoryDeleting] = useState(false);
   const [historyActionMsg, setHistoryActionMsg] = useState<{ text: string; error?: boolean } | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
@@ -537,6 +538,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
       setAutoDeleteChats(Boolean(s.autoDeleteChats));
       setChatRetentionDays(Math.max(1, Number(s.chatRetentionDays) || 30));
       setPermissionAllowance(s.permissionAllowance || 'full_access');
+      setCopilotSecurityMode(s.copilotSecurityMode || 'strict');
     } catch {
       // ignore
     }
@@ -559,6 +561,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
         autoDeleteChats,
         chatRetentionDays,
         permissionAllowance,
+        copilotSecurityMode,
       });
       if (ok) {
         setSettingsSaveMsg({ text: 'Settings saved successfully.' });
@@ -1603,13 +1606,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
         {/* Settings shortcut */}
         <div className="p-2.5 border-t border-[#222222] bg-[#0c0c0c] shrink-0 space-y-2">
           <div>
-            <button
-              onClick={() => onSettingsOpenChange(true)}
-              className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-[#141414] hover:bg-[#1a1a1a] border border-[#27272a] hover:border-[#383838] transition-all group"
-            >
-              <SettingsIcon sx={{ fontSize: 15 }} className="text-[#A1A1AA] group-hover:text-white flex-shrink-0" />
-              <span className="text-xs text-[#D4D4D8] font-medium group-hover:text-white">Settings</span>
-            </button>
+
           </div>
 
           <div className="flex items-center justify-between px-1 text-[10px] font-mono-terminal text-[#71717A]">
@@ -2430,7 +2427,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                     Permission Allowance (Security Policy)
                   </h4>
                   <p className="text-[11px] text-slate-400 mt-0.5">
-                    Controls autonomous tool execution for both SORA Assistant chat and IDE Copilot.
+                    Controls Sora Assistant's external extensions and system tools only. IDE Copilot has its own workspace security mode below.
                   </p>
                 </div>
                 <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider ${
@@ -2502,6 +2499,30 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                   </p>
                 </button>
               </div>
+            </div>
+
+            <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4 space-y-3">
+              <div>
+                <h4 className="text-xs font-semibold text-white">IDE Copilot Security Mode</h4>
+                <p className="text-[11px] text-slate-400 mt-1">Applies only to the workspace-bound IDE Copilot. Copilot uses the integrated IDE terminal and does not run Assistant extensions.</p>
+              </div>
+              <select
+                aria-label="IDE Copilot Security Mode"
+                value={copilotSecurityMode}
+                onChange={(e) => setCopilotSecurityMode(e.target.value as 'full_access' | 'sandbox' | 'strict')}
+                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500/60"
+              >
+                <option value="strict">Strict — confirm every command and file change</option>
+                <option value="sandbox">Sandbox — workspace commands allowed; confirm file changes and package/network installs</option>
+                <option value="full_access">Full Access — autonomous IDE work; confirm deletions</option>
+              </select>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                {copilotSecurityMode === 'strict'
+                  ? 'Copilot may read and analyze freely, but must ask before every terminal command and every file create, edit, rename, or delete.'
+                  : copilotSecurityMode === 'sandbox'
+                  ? 'Copilot may run ordinary commands in the integrated terminal. It must ask before changing files, downloading/installing packages, or using network-download commands.'
+                  : 'Copilot may edit files, install packages, run tests, and build autonomously inside the active workspace. Deleting files or folders still requires confirmation.'}
+              </p>
             </div>
 
             {/* Status / Message */}
