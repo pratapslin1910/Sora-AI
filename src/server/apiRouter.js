@@ -17,6 +17,7 @@ import path from 'node:path';
 import { exec, execFile, spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { FreeLLMAPIProvider } from './FreeLLMAPIProvider.js';
+import { cacheProviderModels, getCachedProviderModels, selectTaskModel } from './taskModelRouter.js';
 import { listChats, getChatById, saveChat, deleteChat, deleteAllChats, deleteChatsOlderThan, searchChats } from './chatStore.js';
 import { performWebSearch, readSiteContent } from './webSearch.js';
 import {
@@ -622,6 +623,7 @@ export async function handleApiRequest(req, res, customProvider) {
   if (req.method === 'GET' && pathname === '/api/health') {
     try {
       const health = await provider.checkHealth();
+      if (Array.isArray(health.availableModels)) cacheProviderModels(provider, health.availableModels);
       jsonResponse(res, health.ok ? 200 : 503, health);
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: provider.formatError(err) });
@@ -633,6 +635,7 @@ export async function handleApiRequest(req, res, customProvider) {
   if (req.method === 'GET' && pathname === '/api/models') {
     try {
       const models = await provider.getModels();
+      cacheProviderModels(provider, models);
       jsonResponse(res, 200, { ok: true, models });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: provider.formatError(err) });
@@ -657,6 +660,8 @@ export async function handleApiRequest(req, res, customProvider) {
         : DEFAULT_CHAT_RETENTION_DAYS,
       permissionAllowance: saved.permissionAllowance || 'full_access',
       copilotSecurityMode: ['full_access', 'sandbox', 'strict'].includes(saved.copilotSecurityMode) ? saved.copilotSecurityMode : 'strict',
+      modelRoutingMode: saved.modelRoutingMode === 'manual' ? 'manual' : 'auto',
+      taskModels: saved.taskModels && typeof saved.taskModels === 'object' ? saved.taskModels : {},
       systemPromptVersion: SORA_PROMPT_VERSION,
       defaultIdentity: 'Sora',
     });
@@ -692,12 +697,34 @@ export async function handleApiRequest(req, res, customProvider) {
       copilotSecurityMode: ['full_access', 'sandbox', 'strict'].includes(body.copilotSecurityMode)
         ? body.copilotSecurityMode
         : (['full_access', 'sandbox', 'strict'].includes(current.copilotSecurityMode) ? current.copilotSecurityMode : 'strict'),
+      modelRoutingMode: body.modelRoutingMode === 'manual' ? 'manual' : (body.modelRoutingMode === 'auto' ? 'auto' : (current.modelRoutingMode === 'manual' ? 'manual' : 'auto')),
+      taskModels: (() => {
+        const allowedTasks = new Set(['reasoning', 'coding', 'vision', 'research', 'assistant']);
+        const incoming = body.taskModels && typeof body.taskModels === 'object' && !Array.isArray(body.taskModels) ? body.taskModels : {};
+        const previous = current.taskModels && typeof current.taskModels === 'object' && !Array.isArray(current.taskModels) ? current.taskModels : {};
+        const merged = { ...previous };
+        for (const [task, selectedModel] of Object.entries(incoming)) {
+          if (allowedTasks.has(task) && typeof selectedModel === 'string' && selectedModel.trim().length <= 200) {
+            merged[task] = selectedModel.trim();
+          }
+        }
+        return merged;
+      })(),
     };
     saveSettings(updated);
     if (extensionManagerInitialized) {
       extensionManager.permissionManager.setAllowanceMode(updated.permissionAllowance);
     }
-    jsonResponse(res, 200, { ok: true, message: 'Settings saved. Gateway reconfigured.' });
+    // New provider instance ensures gateway URL, API key and default model changes
+    // take effect without needing to restart the backend. The next health/models
+    // call refreshes the task router's per-provider model cache.
+    const reconfiguredProvider = new FreeLLMAPIProvider({
+      baseUrl: updated.baseUrl || undefined,
+      apiKey: updated.apiKey || undefined,
+      model: updated.model || undefined,
+    });
+    setProvider(reconfiguredProvider);
+    jsonResponse(res, 200, { ok: true, message: 'Settings saved. Gateway and model routing reconfigured.' });
     return true;
   }
 
