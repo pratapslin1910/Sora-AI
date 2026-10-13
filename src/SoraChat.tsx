@@ -2460,7 +2460,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
               <div>
                 <h4 className="text-xs font-semibold text-white">Task-aware Model Routing</h4>
                 <p className="text-[11px] text-slate-400 mt-1">
-                  Auto selects from the models FreeLLMAPI actually lists for each task. Manual pins the global Model Name above. Task overrides take priority only in Auto mode.
+                  Auto delegates model and provider-availability selection to FreeLLMAPI; a listed model ID does not guarantee a usable key or quota. Manual pins the global Model Name above. Explicit task overrides take priority only in Auto mode.
                 </p>
               </div>
               <select
