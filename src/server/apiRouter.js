@@ -14,7 +14,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { exec } from 'node:child_process';
+import { exec, execFile, spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { FreeLLMAPIProvider } from './FreeLLMAPIProvider.js';
 import { listChats, getChatById, saveChat, deleteChat, deleteAllChats, deleteChatsOlderThan, searchChats } from './chatStore.js';
@@ -45,6 +45,110 @@ const IDE_EXEC_TOKEN = process.env.SORA_IDE_EXEC_TOKEN || randomBytes(32).toStri
 
 let defaultProviderInstance = null;
 let activeWorkspaceRoot = process.cwd();
+let activeWorkspaceSelected = false;
+const terminalSessions = new Map();
+
+const LONG_RUNNING_COMMAND_PATTERN =
+  /(?:^|[;&|]\s*)(?:npm\s+run\s+(?:dev|start|preview|serve)|pnpm\s+(?:run\s+)?(?:dev|start|preview|serve)|yarn\s+(?:run\s+)?(?:dev|start|preview|serve)|bun\s+run\s+(?:dev|start|preview|serve)|npx\s+vite(?:\s|$)|vite(?:\s|$)|next\s+dev(?:\s|$)|python(?:3)?\s+-m\s+http\.server)/i;
+
+function appendSessionOutput(session, field, chunk) {
+  session[field] = (session[field] + String(chunk)).slice(-250000);
+}
+
+function startTerminalSession(command, cwd) {
+  const existing = [...terminalSessions.values()].find(
+    (session) => session.running && session.command === command && session.cwd === cwd
+  );
+  if (existing) return Promise.resolve({ session: existing, alreadyRunning: true });
+
+  const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash';
+  const args = process.platform === 'win32'
+    ? ['-NoLogo', '-NoProfile', '-Command', command]
+    : ['-lc', command];
+  const child = spawn(shell, args, {
+    cwd,
+    shell: false,
+    detached: process.platform !== 'win32',
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const session = {
+    id: randomBytes(12).toString('hex'),
+    command,
+    cwd,
+    pid: null,
+    child,
+    stdout: '',
+    stderr: '',
+    running: true,
+    exitCode: null,
+    startedAt: new Date().toISOString(),
+    endedAt: null,
+  };
+  child.stdout?.on('data', (chunk) => appendSessionOutput(session, 'stdout', chunk));
+  child.stderr?.on('data', (chunk) => appendSessionOutput(session, 'stderr', chunk));
+  child.once('close', (code) => {
+    session.running = false;
+    session.exitCode = Number.isInteger(code) ? code : 1;
+    session.endedAt = new Date().toISOString();
+  });
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    child.once('spawn', () => {
+      settled = true;
+      session.pid = child.pid ?? null;
+      terminalSessions.set(session.id, session);
+      for (const [id, item] of terminalSessions) {
+        if (!item.running && Date.now() - Date.parse(item.endedAt || item.startedAt) > 30 * 60 * 1000) {
+          terminalSessions.delete(id);
+        }
+      }
+      while (terminalSessions.size > 50) {
+        const oldest = [...terminalSessions.values()].find((item) => !item.running);
+        if (!oldest) break;
+        terminalSessions.delete(oldest.id);
+      }
+      resolve({ session, alreadyRunning: false });
+    });
+    child.once('error', (err) => {
+      if (!settled) {
+        reject(err);
+        return;
+      }
+      appendSessionOutput(session, 'stderr', '\nProcess error: ' + err.message + '\n');
+      session.running = false;
+      session.exitCode = 1;
+      session.endedAt = new Date().toISOString();
+    });
+  });
+}
+
+function getTerminalSessionPayload(session) {
+  return {
+    ok: true,
+    processId: session.id,
+    command: session.command,
+    cwd: session.cwd,
+    pid: session.pid,
+    stdout: session.stdout,
+    stderr: session.stderr,
+    running: session.running,
+    exitCode: session.exitCode,
+    startedAt: session.startedAt,
+    endedAt: session.endedAt,
+  };
+}
+
+function requestHasIdeExecutionToken(req, origin) {
+  const suppliedToken = req.headers?.['x-sora-execution-token'];
+  return Boolean(origin && isAllowedOrigin(origin) &&
+    typeof suppliedToken === 'string' &&
+    suppliedToken.length === IDE_EXEC_TOKEN.length &&
+    timingSafeEqual(Buffer.from(suppliedToken), Buffer.from(IDE_EXEC_TOKEN)));
+}
+
+
 
 export const extensionManager = getExtensionManager({
   extensionsDir: path.resolve(__dirname, '../../extensions'),
@@ -350,11 +454,23 @@ export async function handleApiRequest(req, res, customProvider) {
   }
 
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Sora-Token-Request, X-Sora-Execution-Token');
 
   if (req.method === 'OPTIONS') {
     res.statusCode = 204;
     res.end();
+    return true;
+  }
+
+  // A session must explicitly choose a workspace before IDE file or terminal APIs work.
+  const noWorkspaceAllowedRoutes = new Set([
+    '/api/ide/info',
+    '/api/ide/workspace',
+    '/api/ide/choose-folder',
+    '/api/ide/execution-token',
+  ]);
+  if (pathname.startsWith('/api/ide/') && !noWorkspaceAllowedRoutes.has(pathname) && !activeWorkspaceSelected) {
+    jsonResponse(res, 409, { ok: false, error: 'No workspace is open. Choose a folder before using IDE files or terminal.' });
     return true;
   }
 
@@ -1083,10 +1199,44 @@ export async function handleApiRequest(req, res, customProvider) {
   if (req.method === 'GET' && pathname === '/api/ide/info') {
     jsonResponse(res, 200, {
       ok: true,
-      workspaceRoot: activeWorkspaceRoot,
-      cwd: process.cwd(),
+      workspaceSelected: activeWorkspaceSelected,
+      workspaceRoot: activeWorkspaceSelected ? activeWorkspaceRoot : '',
+      cwd: activeWorkspaceSelected ? activeWorkspaceRoot : '',
       platform: process.platform,
       nodeVersion: process.version,
+    });
+    return true;
+  }
+
+  // POST /api/ide/choose-folder — native Windows folder picker with fixed PowerShell script.
+  if (req.method === 'POST' && pathname === '/api/ide/choose-folder') {
+    if (!origin || !isAllowedOrigin(origin)) {
+      jsonResponse(res, 403, { ok: false, error: 'Folder selection requires a trusted local origin.' });
+      return true;
+    }
+    if (process.platform !== 'win32') {
+      jsonResponse(res, 501, { ok: false, error: 'Native folder browsing is supported on Windows. Enter the path manually on this platform.' });
+      return true;
+    }
+    const pickerScript = [
+      'Add-Type -AssemblyName System.Windows.Forms;',
+      '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog;',
+      '$dialog.Description = "Choose a Sora workspace folder";',
+      '$dialog.ShowNewFolderButton = $false;',
+      'if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.WriteLine($dialog.SelectedPath) };',
+      '$dialog.Dispose();',
+    ].join(' ');
+    execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', pickerScript], {
+      windowsHide: false,
+      timeout: 120000,
+      maxBuffer: 1024 * 1024,
+    }, (error, stdout, stderr) => {
+      if (error) {
+        jsonResponse(res, 500, { ok: false, error: stderr?.trim() || error.message || 'Folder picker failed.' });
+        return;
+      }
+      const selectedPath = String(stdout || '').trim();
+      jsonResponse(res, 200, { ok: true, cancelled: !selectedPath, path: selectedPath });
     });
     return true;
   }
@@ -1120,6 +1270,7 @@ export async function handleApiRequest(req, res, customProvider) {
       }
 
       activeWorkspaceRoot = fs.realpathSync(targetDir);
+      activeWorkspaceSelected = true;
       jsonResponse(res, 200, {
         ok: true,
         workspaceRoot: activeWorkspaceRoot,
@@ -1368,13 +1519,9 @@ export async function handleApiRequest(req, res, customProvider) {
     return true;
   }
 
-  // POST /api/ide/exec — shell access requires both a trusted Origin and capability token.
+  // POST /api/ide/exec — shell access requires a trusted Origin and capability token.
   if (req.method === 'POST' && pathname === '/api/ide/exec') {
-    const suppliedToken = req.headers['x-sora-execution-token'];
-    const tokenMatches = typeof suppliedToken === 'string' &&
-      suppliedToken.length === IDE_EXEC_TOKEN.length &&
-      timingSafeEqual(Buffer.from(suppliedToken), Buffer.from(IDE_EXEC_TOKEN));
-    if (!origin || !isAllowedOrigin(origin) || !tokenMatches) {
+    if (!requestHasIdeExecutionToken(req, origin)) {
       jsonResponse(res, 403, { ok: false, error: 'Forbidden: terminal execution requires a trusted local Origin.' });
       return true;
     }
@@ -1407,6 +1554,31 @@ export async function handleApiRequest(req, res, customProvider) {
         }
       }
 
+      if (LONG_RUNNING_COMMAND_PATTERN.test(command.trim())) {
+        startTerminalSession(command.trim(), runCwd).then(({ session, alreadyRunning }) => {
+          jsonResponse(res, 200, {
+            ...getTerminalSessionPayload(session),
+            ok: true,
+            exitCode: session.running ? 0 : (session.exitCode ?? 1),
+            running: session.running,
+            alreadyRunning,
+            message: alreadyRunning
+              ? 'This command is already running in the workspace; attached to its existing process.'
+              : 'Command started in a persistent terminal session.',
+          });
+        }).catch((error) => {
+          jsonResponse(res, 400, {
+            ok: false,
+            error: error.message || 'Could not start command.',
+            stdout: '',
+            stderr: error.message || '',
+            exitCode: 1,
+            cwd: runCwd,
+          });
+        });
+        return true;
+      }
+
       exec(
         command,
         {
@@ -1416,11 +1588,11 @@ export async function handleApiRequest(req, res, customProvider) {
           shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
         },
         (error, stdout, stderr) => {
+          if (res.destroyed || res.writableEnded) return;
           jsonResponse(res, error ? 400 : 200, {
             ok: !error,
             stdout: stdout || '',
             stderr: stderr || (error ? error.message : ''),
-            // error.code can be a string (signal name) or number on Windows — normalise to number
             exitCode: error ? (typeof error.code === 'number' ? error.code : 1) : 0,
             cwd: runCwd,
           });
@@ -1429,6 +1601,47 @@ export async function handleApiRequest(req, res, customProvider) {
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
+    return true;
+  }
+
+  // GET /api/ide/session/:id — return live logs and status for persistent commands.
+  const terminalSessionMatch = pathname.match(/^\/api\/ide\/session\/([a-f0-9]+)$/);
+  if (terminalSessionMatch && req.method === 'GET') {
+    if (!requestHasIdeExecutionToken(req, origin)) {
+      jsonResponse(res, 403, { ok: false, error: 'Terminal session access is not authorized.' });
+      return true;
+    }
+    const session = terminalSessions.get(terminalSessionMatch[1]);
+    if (!session) {
+      jsonResponse(res, 404, { ok: false, error: 'Terminal session was not found or has expired.' });
+      return true;
+    }
+    jsonResponse(res, 200, getTerminalSessionPayload(session));
+    return true;
+  }
+
+  // POST /api/ide/session/:id/stop — stop the process tree without closing the IDE.
+  const terminalSessionStopMatch = pathname.match(/^\/api\/ide\/session\/([a-f0-9]+)\/stop$/);
+  if (terminalSessionStopMatch && req.method === 'POST') {
+    if (!requestHasIdeExecutionToken(req, origin)) {
+      jsonResponse(res, 403, { ok: false, error: 'Terminal session access is not authorized.' });
+      return true;
+    }
+    const session = terminalSessions.get(terminalSessionStopMatch[1]);
+    if (!session) {
+      jsonResponse(res, 404, { ok: false, error: 'Terminal session was not found or has expired.' });
+      return true;
+    }
+    if (session.running && session.pid) {
+      if (process.platform === 'win32') {
+        execFile('taskkill.exe', ['/PID', String(session.pid), '/T', '/F'], { windowsHide: true, timeout: 10000 }, (error) => {
+          if (error) { try { session.child.kill(); } catch {} }
+        });
+      } else {
+        try { process.kill(-session.pid, 'SIGTERM'); } catch { try { session.child.kill('SIGTERM'); } catch {} }
+      }
+    }
+    jsonResponse(res, 200, { ok: true, message: 'Stop requested.', processId: session.id });
     return true;
   }
 

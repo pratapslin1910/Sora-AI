@@ -542,6 +542,7 @@ export interface WorkspaceFileItem {
 
 export interface WorkspaceInfo {
   ok: boolean;
+  workspaceSelected?: boolean;
   workspaceRoot: string;
   cwd?: string;
   platform?: string;
@@ -555,6 +556,25 @@ export interface TerminalExecResult {
   stderr: string;
   exitCode: number;
   cwd?: string;
+  error?: string;
+  processId?: string;
+  running?: boolean;
+  alreadyRunning?: boolean;
+  message?: string;
+}
+
+export interface TerminalSessionStatus {
+  ok: boolean;
+  processId: string;
+  command: string;
+  cwd: string;
+  pid?: number | null;
+  stdout: string;
+  stderr: string;
+  running: boolean;
+  exitCode: number | null;
+  startedAt?: string;
+  endedAt?: string;
   error?: string;
 }
 
@@ -577,6 +597,19 @@ export async function setWorkspaceRoot(newPath: string): Promise<{ ok: boolean; 
     return await res.json();
   } catch (err: any) {
     return { ok: false, error: err.message };
+  }
+}
+
+export async function chooseWorkspaceFolder(): Promise<{ ok: boolean; path?: string; cancelled?: boolean; error?: string }> {
+  try {
+    const res = await fetch('/api/ide/choose-folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Could not open the folder picker.' };
   }
 }
 
@@ -673,9 +706,54 @@ export async function executeTerminalCommand(command: string, cwd?: string): Pro
       body: JSON.stringify({ command, cwd }),
     });
     if (res.status === 403) cachedIdeExecutionToken = null;
-    return await res.json();
+    const data = await res.json();
+    const hasExitCode = Number.isInteger(data?.exitCode);
+    const ok = res.ok && data?.ok === true && hasExitCode && (data.running === true || data.exitCode === 0);
+    return {
+      ok,
+      stdout: typeof data?.stdout === 'string' ? data.stdout : '',
+      stderr: typeof data?.stderr === 'string' ? data.stderr : '',
+      exitCode: hasExitCode ? data.exitCode : 1,
+      cwd: data?.cwd,
+      error: data?.error || (!ok ? data?.message || data?.stderr || `Command was not successful (HTTP ${res.status}).` : undefined),
+      processId: data?.processId,
+      running: Boolean(data?.running),
+      alreadyRunning: Boolean(data?.alreadyRunning),
+      message: data?.message,
+    };
   } catch (err: any) {
-    return { ok: false, stdout: '', stderr: err.message, exitCode: 1 };
+    return { ok: false, stdout: '', stderr: err.message, error: err.message, exitCode: 1 };
+  }
+}
+
+export async function getTerminalSessionStatus(processId: string): Promise<TerminalSessionStatus> {
+  try {
+    const token = await getIdeExecutionToken();
+    const res = await fetch(`/api/ide/session/${encodeURIComponent(processId)}`, {
+      headers: { 'X-Sora-Execution-Token': token },
+    });
+    if (res.status === 403) cachedIdeExecutionToken = null;
+    const data = await res.json();
+    if (!res.ok) return { ok: false, processId, command: '', cwd: '', stdout: '', stderr: '', running: false, exitCode: 1, error: data?.error || 'Unable to read terminal session.' };
+    return data;
+  } catch (err: any) {
+    return { ok: false, processId, command: '', cwd: '', stdout: '', stderr: '', running: false, exitCode: 1, error: err?.message || 'Unable to read terminal session.' };
+  }
+}
+
+export async function stopTerminalSession(processId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const token = await getIdeExecutionToken();
+    const res = await fetch(`/api/ide/session/${encodeURIComponent(processId)}/stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Sora-Execution-Token': token },
+      body: JSON.stringify({}),
+    });
+    if (res.status === 403) cachedIdeExecutionToken = null;
+    const data = await res.json();
+    return { ok: Boolean(res.ok && data?.ok), error: data?.error };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Unable to stop terminal session.' };
   }
 }
 

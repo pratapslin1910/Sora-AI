@@ -32,6 +32,12 @@ describe('IDE & Workspace Endpoints Tests', () => {
         resolve();
       });
     });
+    const workspaceResponse = await fetch(`${baseUrl}/api/ide/workspace`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: testDir }),
+    });
+    assert.equal(workspaceResponse.status, 200);
   });
 
   after(async () => {
