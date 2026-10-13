@@ -11,13 +11,6 @@ export const MODEL_TASK_TYPES = Object.freeze([
   'assistant',
 ]);
 
-const NON_CHAT_MODEL = /(?:embed(?:ding)?|rerank(?:er)?|moderation|whisper|text-to-speech|tts-|speech-to-text|image-generation|flux-|stable-diffusion|guardrail)/i;
-const VISION_MODEL = /(?:vision|llava|pixtral|internvl|molmo|florence|qwen[^/]*[-.]vl(?:[-/.]|$)|(?:^|[/_-])vl(?:[-/.]|$)|llama[^/]*vision|phi-3-vision|gemma-3(?:-|\/|$)|mistral-small-3\.1|multimodal)/i;
-const CODING_MODEL = /(?:coder|codestral|devstral|starcoder|codegemma|granite[-/]code|wizardcoder|deepseek[^/]*coder|qwen[^/]*coder|opencoder|codeqwen|code[- ]?instruct)/i;
-const REASONING_MODEL = /(?:reason(?:ing)?|thinking|qwq|deepseek[^/]*r1|(?:^|[-/])r1(?:[-/.]|$)|(?:^|[-/])o[134](?:[-/.]|$)|magistral|phi-4-reason)/i;
-const RESEARCH_MODEL = /(?:research|browse|web[-_]?search|command-r(?:-plus)?|deepseek[^/]*v3|sonnet|opus|gemini[^/]*pro|gpt-?4|gpt-?5|long[-_]?context|128k|200k)/i;
-const GENERAL_MODEL = /(?:instruct|chat|sonnet|opus|pro|plus|gpt|gemini|llama|qwen|mistral|command|deepseek|large|max|flagship)/i;
-
 function normalizedId(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -64,6 +57,15 @@ function scoreModelForTask(model, taskType) {
  * Choose the model ID to send to /chat/completions.
  * Manual routing pins the global model; Auto routes by task and optional overrides.
  */
+/**
+ * Resolve a model request without confusing model-catalogue visibility with
+ * upstream provider availability.
+ *
+ * FreeLLMAPI /models lists IDs, but does not promise that an ID has a usable
+ * provider key or quota. Auto therefore delegates selection to the gateway's
+ * own availability-aware router. Only explicit task overrides or Manual mode
+ * pin a concrete model ID.
+ */
 export function selectTaskModel({
   taskType = 'reasoning',
   availableModels = [],
@@ -74,13 +76,13 @@ export function selectTaskModel({
   const task = normalizeModelTaskType(taskType);
   const catalog = [...new Set((Array.isArray(availableModels) ? availableModels : [])
     .map(normalizedId).filter(Boolean))];
-
   const defaultId = normalizedId(defaultModel) || 'auto';
+
   if (routingMode === 'manual') {
     return {
       model: defaultId,
       task,
-      reason: 'Manual routing is enabled; the global model is pinned for all tasks.',
+      reason: 'Manual routing is enabled; the configured global model is pinned for all tasks.',
     };
   }
 
@@ -89,58 +91,20 @@ export function selectTaskModel({
     if (catalog.length === 0 || catalog.includes(override)) {
       return { model: override, task, reason: 'Explicit model override for this task.' };
     }
-    // A stale saved override must not send an ID that FreeLLMAPI no longer lists.
-  }
-
-  if (!catalog.length) {
-    // A vision request must not be sent to a configured text-only model just
-    // because model discovery has not completed yet.
-    if (task === 'vision') {
-      return {
-        model: 'auto',
-        task,
-        reason: 'Model catalogue unavailable; delegate vision-capability resolution to FreeLLMAPI auto routing.',
-        warning: 'Model discovery is unavailable for this vision request. FreeLLMAPI auto routing will be used; configure a vision override if the gateway cannot route images.',
-      };
-    }
-    return {
-      model: defaultId.toLowerCase() === 'auto' ? 'auto' : defaultId,
-      task,
-      reason: 'Model catalogue unavailable; using the configured fallback.',
-    };
-  }
-
-  const candidates = catalog
-    .filter((id) => id.toLowerCase() !== 'auto')
-    .map((id) => ({ id, score: scoreModelForTask(id, task) }))
-    .filter((entry) => Number.isFinite(entry.score))
-    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
-
-  if (candidates.length > 0) {
-    return { model: candidates[0].id, task, reason: 'Selected from FreeLLMAPI model catalogue for ' + task + '.' };
-  }
-
-  if (catalog.some((id) => id.toLowerCase() === 'auto')) {
-    return { model: 'auto', task, reason: 'No confidently labelled specialist was found; delegate to FreeLLMAPI auto routing.' };
-  }
-
-  if (task === 'vision') {
     return {
       model: 'auto',
       task,
-      reason: 'No explicitly vision-capable ID was listed; request gateway auto routing as a fallback.',
-      warning: 'FreeLLMAPI does not list a clearly vision-capable model ID. Configure a vision model override if auto routing cannot process images.',
+      reason: 'The saved task override is not present in the current catalogue; delegated to FreeLLMAPI Auto.',
+      warning: 'The configured per-task model is no longer listed by FreeLLMAPI. Auto routing is being used instead.',
     };
   }
 
-  const fallback = catalog
-    .filter((id) => !NON_CHAT_MODEL.test(id))
-    .map((id) => ({ id, score: modelSizeScore(id.toLowerCase()) + (GENERAL_MODEL.test(id) ? 20 : 0) }))
-    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))[0];
   return {
-    model: fallback?.id || defaultId,
+    model: 'auto',
     task,
-    reason: 'No task-specific model name was detected; selected the best available general-chat fallback.',
+    reason: catalog.length
+      ? 'Auto mode delegates provider availability and model selection to FreeLLMAPI; catalogue presence alone does not prove a usable key or quota.'
+      : 'Model catalogue unavailable; delegated selection to FreeLLMAPI Auto.',
   };
 }
 
