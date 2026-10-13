@@ -79,6 +79,11 @@ describe('FreeLLMAPIProvider Unit & Mock Tests', () => {
               res.end();
               return;
             }
+            if (parsed.model === 'trigger-stream-error') {
+              res.write('data: {"error":{"message":"No candidate model has a configured, usable provider key. All models exhausted. 1 model skipped: no key configured for their platform."}}\n\n');
+              res.end();
+              return;
+            }
             if (parsed.model === 'actual-model-test') {
               res.write('data: {"model":"resolved-model-v2","choices":[{"delta":{"content":"Model identified"}}]}\n\n');
               res.write('data: [DONE]\n\n');
@@ -263,6 +268,28 @@ describe('FreeLLMAPIProvider Unit & Mock Tests', () => {
     assert.equal(tokens.join(''), 'Hello world!');
     assert.equal(fullText, 'Hello world!');
     assert.equal(reasoningParts.join(''), 'SECRET_MARKER');
+  });
+
+  it('surfaces upstream provider-key errors embedded in an HTTP 200 SSE stream', async () => {
+    const provider = new FreeLLMAPIProvider({
+      baseUrl: mockBaseUrl,
+      apiKey: 'valid_key',
+      model: 'trigger-stream-error',
+    });
+    const reportedModels = [];
+    const errors = [];
+
+    const fullText = await provider.streamChat({
+      messages: [{ role: 'user', content: 'Hi' }],
+      onModel: (model) => reportedModels.push(model),
+      onToken: () => {},
+      onError: (error) => errors.push(String(error.message || error)),
+    });
+
+    assert.equal(fullText, '');
+    assert.deepEqual(reportedModels, []);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /no usable provider API key is configured/i);
   });
 
   it('does not report a requested model as active when FreeLLMAPI rejects it', async () => {
