@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { exec } from 'node:child_process';
 import { FreeLLMAPIProvider } from './FreeLLMAPIProvider.js';
-import { chooseRandomModel, isConcreteModelId, isRouterModelId } from './modelRouting.js';
+import { chooseRandomModel, isConcreteModelId } from './modelRouting.js';
 import { listChats, getChatById, saveChat, deleteChat, deleteAllChats, deleteChatsOlderThan, searchChats } from './chatStore.js';
 import { performWebSearch, readSiteContent } from './webSearch.js';
 import {
@@ -642,7 +642,9 @@ export async function handleApiRequest(req, res, customProvider) {
           });
           return true;
         }
-      } else if (isRouterModelId(requestedModel)) {
+      } else if (requestedModel.toLowerCase() === 'fusion' || requestedModel.toLowerCase().startsWith('auto:')) {
+        // Keep explicitly configured FreeLLMAPI router targets valid, but do not
+        // treat Claude family slot aliases as concrete chat models.
         selectedModel = requestedModel;
       } else if (isConcreteModelId(requestedModel) && readyModels.includes(requestedModel)) {
         selectedModel = requestedModel;
