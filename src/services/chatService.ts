@@ -41,14 +41,15 @@ export async function checkGatewayHealth(): Promise<GatewayHealth> {
 }
 
 export async function fetchAvailableModels(): Promise<string[]> {
-  try {
-    const res = await fetch('/api/models');
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data?.models || [];
-  } catch {
-    return [];
+  const res = await fetch('/api/models');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || `Model discovery failed (HTTP ${res.status}).`);
   }
+  if (!Array.isArray(data?.models)) {
+    throw new Error('The gateway returned an invalid available-model list.');
+  }
+  return data.models.filter((model: unknown): model is string => typeof model === 'string' && model.trim().length > 0);
 }
 
 export interface GatewaySettings {
