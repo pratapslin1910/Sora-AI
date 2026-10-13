@@ -28,7 +28,7 @@ import {
   detectAndExtractMemories,
   recallContextForQuery,
 } from './memoryStore.js';
-import { buildSystemPrompt, SORA_PROMPT_VERSION } from './systemPrompt.js';
+import { buildSystemPrompt, resolveConflictingMemories, SORA_PROMPT_VERSION } from './systemPrompt.js';
 import { parseReasoningAndAnswer } from './responseParser.js';
 
 import { fileURLToPath } from 'node:url';
@@ -656,6 +656,7 @@ export async function handleApiRequest(req, res, customProvider) {
         ? Math.max(0, Math.min(3650, Number(saved.chatRetentionDays)))
         : DEFAULT_CHAT_RETENTION_DAYS,
       permissionAllowance: saved.permissionAllowance || 'full_access',
+      copilotSecurityMode: ['full_access', 'sandbox', 'strict'].includes(saved.copilotSecurityMode) ? saved.copilotSecurityMode : 'strict',
       systemPromptVersion: SORA_PROMPT_VERSION,
       defaultIdentity: 'Sora',
     });
@@ -688,6 +689,9 @@ export async function handleApiRequest(req, res, customProvider) {
       permissionAllowance: ['full_access', 'sandbox', 'strict'].includes(body.permissionAllowance)
         ? body.permissionAllowance
         : (current.permissionAllowance || 'full_access'),
+      copilotSecurityMode: ['full_access', 'sandbox', 'strict'].includes(body.copilotSecurityMode)
+        ? body.copilotSecurityMode
+        : (['full_access', 'sandbox', 'strict'].includes(current.copilotSecurityMode) ? current.copilotSecurityMode : 'strict'),
     };
     saveSettings(updated);
     if (extensionManagerInitialized) {
@@ -769,8 +773,23 @@ export async function handleApiRequest(req, res, customProvider) {
       ? ''
       : extensionManager.toolRegistry.formatToolsForPrompt();
 
+    // Keep explicit saved user instructions/preferences available on every request,
+    // even when they are not semantically close to the latest question.
+    // Identity-conflicting memory text is neutralized before prompt injection.
+    const preferenceTags = new Set(['preference', 'user-preference', 'personal-preference', 'communication-preference', 'response-style', 'language-preference', 'user-profile']);
+    const savedPreferenceMemories = resolveConflictingMemories(listMemories().filter((memory) => {
+      const tags = Array.isArray(memory.tags) ? memory.tags.map((tag) => String(tag).toLowerCase()) : String(memory.tags || '').split(',').map((tag) => tag.trim().toLowerCase());
+      const markedAsPreference = tags.some((tag) => preferenceTags.has(tag));
+      const preferenceTitle = /user.?preferences?|personal preferences?|communication preferences?|response style|language preferences?|user profile/i.test(String(memory.title || ''));
+      return memory.type === 'instruction' || markedAsPreference || preferenceTitle;
+    })).slice(0, 40);
+    const userPreferences = savedPreferenceMemories
+      .map((memory) => `- [${memory.title || 'Saved instruction'}]: ${memory.content}`)
+      .join('\\n');
+
     const centralizedSystemPrompt = buildSystemPrompt({
       clientSystemPrompt,
+      userPreferences,
       recalledContext: recalledData?.formattedContext || '',
       currentModel: model || provider.defaultModel || 'auto',
       toolsPrompt,
