@@ -43,6 +43,13 @@ test('router aliases are not classified as concrete models', () => {
   assert.equal(isConcreteModelId('claude-sonnet-4-5'), true);
 });
 
+test('older available-filter responses without status metadata remain selectable', () => {
+  assert.deepEqual(
+    getReadyModelIds([{ id: 'legacy-available-model' }], { assumeReadyWhenFiltered: true }),
+    ['legacy-available-model'],
+  );
+});
+
 test('random selection chooses only from supplied available concrete models', () => {
   const available = getReadyModelIds(catalogue);
   assert.equal(chooseRandomModel(available, () => 0), 'gemini-2.5-flash');
