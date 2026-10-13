@@ -142,7 +142,8 @@ function getTerminalSessionPayload(session) {
 
 function requestHasIdeExecutionToken(req, origin) {
   const suppliedToken = req.headers?.['x-sora-execution-token'];
-  return Boolean(origin && isAllowedOrigin(origin) &&
+  const trustedOrigin = origin ? isAllowedOrigin(origin) : isAllowedHost(req.headers?.host || '');
+  return Boolean(trustedOrigin &&
     typeof suppliedToken === 'string' &&
     suppliedToken.length === IDE_EXEC_TOKEN.length &&
     timingSafeEqual(Buffer.from(suppliedToken), Buffer.from(IDE_EXEC_TOKEN)));
@@ -888,6 +889,7 @@ export async function handleApiRequest(req, res, customProvider) {
           model,
           temperature,
           signal: abortController.signal,
+          onModel: (activeModel) => writeStreamEvent({ model: activeModel, task: taskType }),
           onModel: (activeModel) => writeStreamEvent({ model: activeModel, task: taskType }),
           onReasoning: (reasoning) => writeStreamEvent({ reasoning }),
           onToken: (token) => writeStreamEvent({ token }),

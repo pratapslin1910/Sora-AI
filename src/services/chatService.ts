@@ -719,7 +719,9 @@ let cachedIdeExecutionToken: string | null = null;
 async function getIdeExecutionToken(): Promise<string> {
   if (cachedIdeExecutionToken) return cachedIdeExecutionToken;
   const res = await fetch('/api/ide/execution-token', {
-    headers: { 'X-Sora-Token-Request': '1' },
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Sora-Token-Request': '1' },
+    body: JSON.stringify({}),
   });
   if (!res.ok) throw new Error('Unable to authorize the integrated terminal.');
   const result = await res.json();

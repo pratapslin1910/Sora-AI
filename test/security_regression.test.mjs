@@ -470,7 +470,9 @@ describe('FIX 7 — Terminal exec: exit code and catastrophic command blocking',
 
   const authorizedExecHeaders = async () => {
     const tokenRes = await fetch(`${baseUrl}/api/ide/execution-token`, {
-      headers: { Origin: 'http://127.0.0.1', 'X-Sora-Token-Request': '1' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1', 'X-Sora-Token-Request': '1' },
+      body: JSON.stringify({}),
     });
     assert.equal(tokenRes.status, 200);
     const { token } = await tokenRes.json();

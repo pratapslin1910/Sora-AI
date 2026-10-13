@@ -126,7 +126,9 @@ describe('Stage B Enhancements & Reliability Regression Tests', () => {
 
   const authorizedExecHeaders = async () => {
     const tokenRes = await fetch(`${baseUrl}/api/ide/execution-token`, {
-      headers: { Origin: 'http://127.0.0.1', 'X-Sora-Token-Request': '1' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1', 'X-Sora-Token-Request': '1' },
+      body: JSON.stringify({}),
     });
     const { token } = await tokenRes.json();
     return { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1', 'X-Sora-Execution-Token': token };

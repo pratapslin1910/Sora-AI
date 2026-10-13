@@ -212,7 +212,6 @@ export class FreeLLMAPIProvider {
 
     const timedRequest = createTimedRequestSignal(signal, this.timeoutMs);
     try {
-      await reportModel(chosenModel);
       const res = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -351,6 +350,7 @@ export class FreeLLMAPIProvider {
     };
 
     try {
+      await reportModel(chosenModel);
       const res = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
