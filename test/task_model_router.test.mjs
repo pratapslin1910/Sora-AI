@@ -7,7 +7,7 @@ import {
   selectTaskModel,
 } from '../src/server/taskModelRouter.js';
 
-test('task model router selects explicit specialist model IDs from the provider catalogue', () => {
+test('Auto mode delegates model availability and selection to FreeLLMAPI even when many IDs are listed', () => {
   const models = [
     'chat-general-8b-instruct',
     'deepseek-r1-32b',
@@ -17,19 +17,21 @@ test('task model router selects explicit specialist model IDs from the provider 
     'reranker-v2',
   ];
 
-  assert.equal(selectTaskModel({ taskType: 'reasoning', availableModels: models }).model, 'deepseek-r1-32b');
-  assert.equal(selectTaskModel({ taskType: 'coding', availableModels: models }).model, 'qwen2.5-coder-32b-instruct');
-  assert.equal(selectTaskModel({ taskType: 'vision', availableModels: models }).model, 'qwen2.5-vl-8b-instruct');
-  assert.notEqual(selectTaskModel({ taskType: 'assistant', availableModels: models }).model, 'embedding-large');
-  assert.notEqual(selectTaskModel({ taskType: 'research', availableModels: models }).model, 'reranker-v2');
+  for (const taskType of ['reasoning', 'coding', 'vision', 'research', 'assistant']) {
+    const result = selectTaskModel({ taskType, availableModels: models, defaultModel: 'qwen3-235b-a22b-thinking-25' });
+    assert.equal(result.model, 'auto', taskType + ' should delegate provider availability to FreeLLMAPI');
+    assert.match(result.reason, /delegates provider availability/i);
+  }
 });
 
-test('general assistant tasks prefer a general chat model over coding/reasoning specialists', () => {
+test('Auto ignores an unavailable configured default even if it looks like a strong model', () => {
   const result = selectTaskModel({
-    taskType: 'assistant',
-    availableModels: ['chat-general-8b-instruct', 'deepseek-r1-32b', 'qwen2.5-coder-32b-instruct'],
+    taskType: 'reasoning',
+    availableModels: ['chat-general-8b-instruct'],
+    defaultModel: 'qwen3-235b-a22b-thinking-25',
+    routingMode: 'auto',
   });
-  assert.equal(result.model, 'chat-general-8b-instruct');
+  assert.equal(result.model, 'auto');
 });
 
 test('manual mode pins one configured model and ignores specialist candidates', () => {
@@ -42,7 +44,7 @@ test('manual mode pins one configured model and ignores specialist candidates', 
   assert.equal(result.model, 'chat-general-8b-instruct');
 });
 
-test('a valid per-task override takes priority in Auto mode', () => {
+test('a valid explicit per-task override can pin a model in Auto mode', () => {
   const result = selectTaskModel({
     taskType: 'coding',
     availableModels: ['qwen2.5-coder-32b-instruct', 'codestral-22b'],
@@ -53,27 +55,32 @@ test('a valid per-task override takes priority in Auto mode', () => {
   assert.match(result.reason, /override/i);
 });
 
-test('stale overrides are ignored when a non-empty current catalogue exists', () => {
+test('stale overrides are ignored and Auto is delegated to the gateway', () => {
   const result = selectTaskModel({
     taskType: 'coding',
     availableModels: ['deepseek-r1-32b', 'qwen2.5-coder-32b-instruct'],
     taskModels: { coding: 'deleted-old-coder' },
   });
-  assert.equal(result.model, 'qwen2.5-coder-32b-instruct');
+  assert.equal(result.model, 'auto');
+  assert.match(result.reason, /FreeLLMAPI Auto/i);
 });
 
-test('vision never assumes an ordinary text model supports images', () => {
+test('vision Auto routing delegates to FreeLLMAPI rather than guessing a text-only or vision model', () => {
   const listedTextOnly = selectTaskModel({
     taskType: 'vision',
     availableModels: ['llama-3.1-8b-instruct', 'qwen2.5-14b-instruct'],
     defaultModel: 'qwen2.5-14b-instruct',
   });
   assert.equal(listedTextOnly.model, 'auto');
-  assert.match(listedTextOnly.warning, /vision-capable/i);
+
+  const catalogueHasVision = selectTaskModel({
+    taskType: 'vision',
+    availableModels: ['llama-3.1-8b-instruct', 'qwen2.5-vl-8b-instruct'],
+  });
+  assert.equal(catalogueHasVision.model, 'auto');
 
   const noCatalogue = selectTaskModel({ taskType: 'vision', availableModels: [], defaultModel: 'qwen2.5-14b-instruct' });
   assert.equal(noCatalogue.model, 'auto');
-  assert.ok(noCatalogue.warning);
 });
 
 test('unknown task types safely normalize to reasoning', () => {
