@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { FolderOpen, AlertCircle, Check, X, HardDrive } from 'lucide-react';
-import { setWorkspaceRoot } from '../../services/chatService';
+import { chooseWorkspaceFolder, setWorkspaceRoot } from '../../services/chatService';
 
 interface WorkspaceSwitcherModalProps {
   currentWorkspace: string;
@@ -15,11 +15,33 @@ export const WorkspaceSwitcherModal: React.FC<WorkspaceSwitcherModalProps> = ({
   onClose,
   onWorkspaceChanged,
 }) => {
-  const [targetPath, setTargetPath] = useState<string>(currentWorkspace);
+  const [targetPath, setTargetPath] = useState<string>(currentWorkspace || '');
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isBrowsing, setIsBrowsing] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (isOpen) {
+      setTargetPath(currentWorkspace || '');
+      setErrorMsg(null);
+    }
+  }, [isOpen, currentWorkspace]);
+
   if (!isOpen) return null;
+
+  const handleBrowse = async () => {
+    setIsBrowsing(true);
+    setErrorMsg(null);
+    try {
+      const result = await chooseWorkspaceFolder();
+      if (!result.ok) setErrorMsg(result.error || 'Could not open folder picker.');
+      else if (!result.cancelled && result.path) setTargetPath(result.path);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Could not open folder picker.');
+    } finally {
+      setIsBrowsing(false);
+    }
+  };
 
   const handleSwitch = async () => {
     if (!targetPath.trim() || isLoading) return;
@@ -81,7 +103,7 @@ export const WorkspaceSwitcherModal: React.FC<WorkspaceSwitcherModalProps> = ({
           <span className="text-[#71717A] text-[10px] uppercase font-bold tracking-wider">
             Current Workspace Root:
           </span>
-          <div className="text-white truncate font-medium">{currentWorkspace}</div>
+          <div className="text-white truncate font-medium">{currentWorkspace || 'No workspace selected'}</div>
         </div>
 
         {/* Path Input */}
@@ -89,20 +111,30 @@ export const WorkspaceSwitcherModal: React.FC<WorkspaceSwitcherModalProps> = ({
           <label className="text-xs font-mono text-[#bbbbbb] font-semibold">
             Target Directory Path:
           </label>
-          <div className="relative flex items-center">
-            <HardDrive className="w-4 h-4 absolute left-3 text-[#71717A]" />
-            <input
-              type="text"
-              autoFocus
-              value={targetPath}
-              onChange={(e) => setTargetPath(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleSwitch();
-                if (e.key === 'Escape') onClose();
-              }}
-              placeholder="e.g. D:\PratapSingh\AI\Sora_V1 or C:\Projects"
-              className="w-full bg-[#141414] border border-[#333333] focus:border-[#007acc] rounded-lg pl-9 pr-3 py-2 text-xs font-mono text-white placeholder-[#555555] outline-none"
-            />
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1 flex items-center">
+              <HardDrive className="w-4 h-4 absolute left-3 text-[#71717A]" />
+              <input
+                type="text"
+                value={targetPath}
+                onChange={(e) => setTargetPath(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSwitch();
+                  if (e.key === 'Escape') onClose();
+                }}
+                placeholder="e.g. D:\Projects\MyApp"
+                className="w-full bg-[#141414] border border-[#333333] focus:border-[#007acc] rounded-lg pl-9 pr-3 py-2 text-xs font-mono text-white placeholder-[#555555] outline-none"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleBrowse}
+              disabled={isBrowsing || isLoading}
+              className="px-3 py-2 rounded-lg bg-[#252526] hover:bg-[#333333] border border-[#333333] text-xs text-white flex items-center gap-1.5 disabled:opacity-40"
+            >
+              <FolderOpen className="w-3.5 h-3.5" />
+              {isBrowsing ? 'Opening…' : 'Browse…'}
+            </button>
           </div>
         </div>
 

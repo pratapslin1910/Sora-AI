@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Files,
   Search,
@@ -42,6 +42,8 @@ import {
   deleteWorkspaceItem,
   executeTerminalCommand,
   TerminalExecResult,
+  getTerminalSessionStatus,
+  stopTerminalSession,
 } from '../services/chatService';
 
 interface IDEViewProps {
@@ -51,6 +53,7 @@ interface IDEViewProps {
 export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
   // ── Workspace & Files State ──────────────────────────────────────────────
   const [workspaceRoot, setWorkspaceRoot] = useState<string>('');
+  const [workspaceSelected, setWorkspaceSelected] = useState<boolean>(false);
   const [currentPath, setCurrentPath] = useState<string>('');
   const [files, setFiles] = useState<FileItem[]>([]);
   const [isLoadingFiles, setIsLoadingFiles] = useState<boolean>(false);
@@ -72,7 +75,44 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
 
   // ── Terminal State ───────────────────────────────────────────────────────
   const [terminalHistory, setTerminalHistory] = useState<TerminalEntry[]>([]);
+  const terminalHistoryRef = useRef<TerminalEntry[]>([]);
+  const terminalPollingRef = useRef<boolean>(false);
   const [isExecuting, setIsExecuting] = useState<boolean>(false);
+
+  useEffect(() => {
+    terminalHistoryRef.current = terminalHistory;
+  }, [terminalHistory]);
+
+  // Persistent dev processes continue after the panel is closed; poll their output in the background.
+  useEffect(() => {
+    const poll = async () => {
+      if (terminalPollingRef.current) return;
+      const pending = terminalHistoryRef.current.filter((entry) => entry.running && entry.processId);
+      if (!pending.length) return;
+      terminalPollingRef.current = true;
+      try {
+        const results = await Promise.all(pending.map(async (entry) => ({
+          entryId: entry.id,
+          status: await getTerminalSessionStatus(entry.processId!),
+        })));
+        setTerminalHistory((previous) => previous.map((entry) => {
+          const status = results.find((item) => item.entryId === entry.id)?.status;
+          if (!status) return entry;
+          return {
+            ...entry,
+            stdout: status.stdout || '',
+            stderr: status.stderr || '',
+            running: status.running,
+            code: status.running ? -1 : (status.exitCode ?? 1),
+          };
+        }));
+      } finally {
+        terminalPollingRef.current = false;
+      }
+    };
+    const timer = setInterval(() => { void poll(); }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   // ── Modals State ─────────────────────────────────────────────────────────
   const [workspaceModalOpen, setWorkspaceModalOpen] = useState<boolean>(false);
@@ -129,16 +169,17 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // No deps: always uses the freshest dirPath argument
 
-  // Initial load — run once on mount only
+  // Do not open Sora's own process working directory by default.
   useEffect(() => {
     getWorkspaceInfo().then((info) => {
-      if (info.ok && info.workspaceRoot) {
+      if (info.ok && info.workspaceSelected && info.workspaceRoot) {
         setWorkspaceRoot(info.workspaceRoot);
+        setWorkspaceSelected(true);
+        loadWorkspace('');
       }
     });
-    loadWorkspace('');
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // loadWorkspace identity is stable (empty deps above)
+  }, []);
 
   // ── File Operations ──────────────────────────────────────────────────────
 
@@ -366,6 +407,7 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
       if (!confirmDiscard) return;
     }
     setWorkspaceRoot(newRoot);
+    setWorkspaceSelected(true);
     setCurrentPath('');
     setTabs([]);
     setActiveTabPath('');
@@ -375,8 +417,11 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
 
   // ── Terminal Execution ───────────────────────────────────────────────────
   const handleRunTerminalCommand = async (cmd: string): Promise<TerminalExecResult> => {
+    if (!workspaceSelected || !workspaceRoot) {
+      return { ok: false, stdout: '', stderr: 'No workspace is open. Choose a folder before running terminal commands.', error: 'No workspace is open.', exitCode: 1 };
+    }
     if (!cmd.trim() || isExecuting) {
-      return { ok: false, stdout: '', stderr: 'Terminal is busy or command is empty', exitCode: 1 };
+      return { ok: false, stdout: '', stderr: 'Terminal is busy or command is empty', error: 'Terminal is busy or command is empty', exitCode: 1 };
     }
     setIsExecuting(true);
     setTerminalOpen(true);
@@ -395,12 +440,14 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
         command: cmd.trim(),
         stdout: res.stdout || '',
         stderr: res.stderr || '',
-        code: res.exitCode,
+        code: res.running ? -1 : res.exitCode,
         cwd: res.cwd || workspaceRoot,
         timestamp: timeStr,
+        processId: res.processId,
+        running: Boolean(res.running),
       };
       setTerminalHistory((prev) => [...prev, newEntry]);
-      // If filesystem could be modified, refresh explorer
+      if (!res.ok) showStatus(res.error || res.stderr || 'Terminal command failed.', 'error');
       loadWorkspace(currentPath);
       return res;
     } catch (err: any) {
@@ -418,6 +465,15 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
     } finally {
       setIsExecuting(false);
     }
+  };
+
+  const handleStopTerminalProcess = async (processId: string) => {
+    const result = await stopTerminalSession(processId);
+    if (!result.ok) {
+      showStatus(result.error || 'Could not stop terminal process.', 'error');
+      return;
+    }
+    showStatus('Stop requested for persistent process.', 'success');
   };
 
   // ── Global Keyboard Shortcuts ────────────────────────────────────────────
@@ -478,6 +534,36 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
     }
     return <File className="w-3.5 h-3.5 text-[#A1A1AA] shrink-0" />;
   };
+
+  if (!workspaceSelected) {
+    return (
+      <div className="flex-1 w-full h-full overflow-hidden flex flex-col items-center justify-center bg-[#101010] text-[#cccccc] relative">
+        <div className="max-w-lg w-full mx-auto px-6 text-center space-y-4">
+          <div className="mx-auto w-16 h-16 rounded-2xl bg-[#181818] border border-[#303030] flex items-center justify-center">
+            <FolderOpen className="w-8 h-8 text-[#2684FF]" />
+          </div>
+          <h2 className="text-xl font-semibold text-white">No workspace open</h2>
+          <p className="text-sm text-[#9ca3af] leading-relaxed">
+            Choose a project folder to populate Explorer, enable Copilot file tools, and run terminal commands.
+            Sora's own application folder will not be opened automatically.
+          </p>
+          <button
+            type="button"
+            onClick={() => setWorkspaceModalOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#007acc] hover:bg-[#0062a3] text-white text-sm font-semibold"
+          >
+            <FolderOpen className="w-4 h-4" /> Open Folder…
+          </button>
+        </div>
+        <WorkspaceSwitcherModal
+          currentWorkspace=""
+          isOpen={workspaceModalOpen}
+          onClose={() => setWorkspaceModalOpen(false)}
+          onWorkspaceChanged={handleWorkspaceChanged}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 w-full h-full overflow-hidden flex bg-[#1e1e1e] text-[#cccccc] select-none font-sans">
@@ -777,6 +863,7 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant }) => {
             terminalHistory={terminalHistory}
             isExecuting={isExecuting}
             onRunCommand={handleRunTerminalCommand}
+            onStopProcess={handleStopTerminalProcess}
             onClear={() => setTerminalHistory([])}
             onClose={() => setTerminalOpen(false)}
           />

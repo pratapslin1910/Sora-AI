@@ -124,6 +124,7 @@ export interface RecalledContextPayload {
 
 export interface StreamChatOptions {
   model?: string;
+  taskType?: 'reasoning' | 'assistant' | 'coding' | 'research' | 'vision' | 'terminal' | 'other';
   signal?: AbortSignal;
   recallMemory?: boolean;
   currentChatId?: string | null;
@@ -141,6 +142,7 @@ export async function streamChatMessage(
 ): Promise<void> {
   const {
     model,
+    taskType = 'reasoning',
     signal,
     recallMemory = true,
     currentChatId = null,
@@ -152,6 +154,16 @@ export async function streamChatMessage(
     onError,
   } = options;
 
+  let lastReportedModel = model || 'auto';
+  const emitModelActivity = (type: 'start' | 'model' | 'done' | 'error', extra: Record<string, unknown> = {}) => {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('sora:model-activity', {
+        detail: { type, model: lastReportedModel, task: taskType, ...extra },
+      }));
+    }
+  };
+  emitModelActivity('start');
+
   try {
     const response = await fetch('/api/chat', {
       method: 'POST',
@@ -159,6 +171,7 @@ export async function streamChatMessage(
       body: JSON.stringify({
         messages,
         model,
+        taskType,
         stream: true,
         recallMemory,
         currentChatId,
@@ -175,12 +188,15 @@ export async function streamChatMessage(
       } catch {
         /* fallback */
       }
+      emitModelActivity('error', { error: msg });
       onError(msg);
       return;
     }
 
     if (!response.body) {
-      onError('No response body received from server.');
+      const error = 'No response body received from server.';
+      emitModelActivity('error', { error });
+      onError(error);
       return;
     }
 
@@ -213,6 +229,10 @@ export async function streamChatMessage(
           if (payload.memorySaved && onMemorySaved) {
             onMemorySaved(payload.memorySaved);
           }
+          if (typeof payload.model === 'string' && payload.model) {
+            lastReportedModel = payload.model;
+            emitModelActivity('model', { model: payload.model, task: payload.task || taskType });
+          }
           if (payload.reasoning && onReasoning) {
             onReasoning(payload.reasoning);
           }
@@ -221,6 +241,7 @@ export async function streamChatMessage(
           }
           if (payload.done && !doneCalled) {
             doneCalled = true;
+            emitModelActivity('done');
             onDone();
             return;
           }
@@ -244,6 +265,10 @@ export async function streamChatMessage(
         if (payload.memorySaved && onMemorySaved) {
           onMemorySaved(payload.memorySaved);
         }
+        if (typeof payload.model === 'string' && payload.model) {
+          lastReportedModel = payload.model;
+          emitModelActivity('model', { model: payload.model, task: payload.task || taskType });
+        }
         if (payload.reasoning && onReasoning) {
           onReasoning(payload.reasoning);
         }
@@ -256,11 +281,17 @@ export async function streamChatMessage(
     }
 
     if (!doneCalled) {
+      emitModelActivity('done');
       onDone();
     }
   } catch (err: any) {
-    if (signal?.aborted) return;
-    onError(err?.message || 'Stream connection failed.');
+    if (signal?.aborted) {
+      emitModelActivity('done');
+      return;
+    }
+    const error = err?.message || 'Stream connection failed.';
+    emitModelActivity('error', { error });
+    onError(error);
   }
 }
 
@@ -542,6 +573,7 @@ export interface WorkspaceFileItem {
 
 export interface WorkspaceInfo {
   ok: boolean;
+  workspaceSelected?: boolean;
   workspaceRoot: string;
   cwd?: string;
   platform?: string;
@@ -555,6 +587,25 @@ export interface TerminalExecResult {
   stderr: string;
   exitCode: number;
   cwd?: string;
+  error?: string;
+  processId?: string;
+  running?: boolean;
+  alreadyRunning?: boolean;
+  message?: string;
+}
+
+export interface TerminalSessionStatus {
+  ok: boolean;
+  processId: string;
+  command: string;
+  cwd: string;
+  pid?: number | null;
+  stdout: string;
+  stderr: string;
+  running: boolean;
+  exitCode: number | null;
+  startedAt?: string;
+  endedAt?: string;
   error?: string;
 }
 
@@ -577,6 +628,19 @@ export async function setWorkspaceRoot(newPath: string): Promise<{ ok: boolean; 
     return await res.json();
   } catch (err: any) {
     return { ok: false, error: err.message };
+  }
+}
+
+export async function chooseWorkspaceFolder(): Promise<{ ok: boolean; path?: string; cancelled?: boolean; error?: string }> {
+  try {
+    const res = await fetch('/api/ide/choose-folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Could not open the folder picker.' };
   }
 }
 
@@ -655,7 +719,9 @@ let cachedIdeExecutionToken: string | null = null;
 async function getIdeExecutionToken(): Promise<string> {
   if (cachedIdeExecutionToken) return cachedIdeExecutionToken;
   const res = await fetch('/api/ide/execution-token', {
-    headers: { 'X-Sora-Token-Request': '1' },
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Sora-Token-Request': '1' },
+    body: JSON.stringify({}),
   });
   if (!res.ok) throw new Error('Unable to authorize the integrated terminal.');
   const result = await res.json();
@@ -673,9 +739,54 @@ export async function executeTerminalCommand(command: string, cwd?: string): Pro
       body: JSON.stringify({ command, cwd }),
     });
     if (res.status === 403) cachedIdeExecutionToken = null;
-    return await res.json();
+    const data = await res.json();
+    const hasExitCode = Number.isInteger(data?.exitCode);
+    const ok = res.ok && data?.ok === true && hasExitCode && (data.running === true || data.exitCode === 0);
+    return {
+      ok,
+      stdout: typeof data?.stdout === 'string' ? data.stdout : '',
+      stderr: typeof data?.stderr === 'string' ? data.stderr : '',
+      exitCode: hasExitCode ? data.exitCode : 1,
+      cwd: data?.cwd,
+      error: data?.error || (!ok ? data?.message || data?.stderr || `Command was not successful (HTTP ${res.status}).` : undefined),
+      processId: data?.processId,
+      running: Boolean(data?.running),
+      alreadyRunning: Boolean(data?.alreadyRunning),
+      message: data?.message,
+    };
   } catch (err: any) {
-    return { ok: false, stdout: '', stderr: err.message, exitCode: 1 };
+    return { ok: false, stdout: '', stderr: err.message, error: err.message, exitCode: 1 };
+  }
+}
+
+export async function getTerminalSessionStatus(processId: string): Promise<TerminalSessionStatus> {
+  try {
+    const token = await getIdeExecutionToken();
+    const res = await fetch(`/api/ide/session/${encodeURIComponent(processId)}`, {
+      headers: { 'X-Sora-Execution-Token': token },
+    });
+    if (res.status === 403) cachedIdeExecutionToken = null;
+    const data = await res.json();
+    if (!res.ok) return { ok: false, processId, command: '', cwd: '', stdout: '', stderr: '', running: false, exitCode: 1, error: data?.error || 'Unable to read terminal session.' };
+    return data;
+  } catch (err: any) {
+    return { ok: false, processId, command: '', cwd: '', stdout: '', stderr: '', running: false, exitCode: 1, error: err?.message || 'Unable to read terminal session.' };
+  }
+}
+
+export async function stopTerminalSession(processId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const token = await getIdeExecutionToken();
+    const res = await fetch(`/api/ide/session/${encodeURIComponent(processId)}/stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Sora-Execution-Token': token },
+      body: JSON.stringify({}),
+    });
+    if (res.status === 403) cachedIdeExecutionToken = null;
+    const data = await res.json();
+    return { ok: Boolean(res.ok && data?.ok), error: data?.error };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Unable to stop terminal session.' };
   }
 }
 

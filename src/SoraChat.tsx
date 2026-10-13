@@ -1050,6 +1050,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
       messagesToSend,
       {
         signal: abortController.signal,
+        taskType: imageFiles.length > 0 ? 'vision' : 'reasoning',
         recallMemory: true,
         currentChatId: activeChatIdRef.current,
         onRecall: (recalled) => {
@@ -2364,7 +2365,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
           </div>
 
           {settingsTab === 'extensions' ? (
-            <ExtensionsManagerView />
+            <ExtensionsManagerView permissionAllowance={permissionAllowance} />
           ) : (
           <div className="space-y-4 text-xs">
             {/* Base URL */}

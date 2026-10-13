@@ -273,6 +273,7 @@ export class FreeLLMAPIProvider {
     signal,
     onToken = () => {},
     onReasoning = () => {},
+    onModel = () => {},
     onDone = () => {},
     onError = () => {},
   } = {}) {
@@ -290,6 +291,12 @@ export class FreeLLMAPIProvider {
 
     let fullText = '';
     const timedRequest = createTimedRequestSignal(signal, this.timeoutMs);
+    let reportedModel = '';
+    const reportModel = async (name) => {
+      if (typeof name !== 'string' || !name.trim() || name === reportedModel) return;
+      reportedModel = name;
+      await onModel(name);
+    };
     let inlineReasoning = false;
     let inlineBuffer = '';
 
@@ -343,6 +350,7 @@ export class FreeLLMAPIProvider {
     };
 
     try {
+      await reportModel(chosenModel);
       const res = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -393,6 +401,7 @@ export class FreeLLMAPIProvider {
 
             try {
               const chunkJson = JSON.parse(dataStr);
+              if (chunkJson?.model) await reportModel(chunkJson.model);
               const delta = chunkJson?.choices?.[0]?.delta;
               if (delta?.reasoning_content || delta?.reasoning) {
                 const rChunk = delta.reasoning_content || delta.reasoning;
@@ -414,6 +423,7 @@ export class FreeLLMAPIProvider {
           if (dataStr !== '[DONE]') {
             try {
               const chunkJson = JSON.parse(dataStr);
+              if (chunkJson?.model) await reportModel(chunkJson.model);
               const delta = chunkJson?.choices?.[0]?.delta;
               if (delta?.reasoning_content || delta?.reasoning) {
                 const rChunk = delta.reasoning_content || delta.reasoning;

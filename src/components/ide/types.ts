@@ -28,6 +28,8 @@ export interface TerminalEntry {
   code: number;
   cwd?: string;
   timestamp: string;
+  processId?: string;
+  running?: boolean;
 }
 
 export type ActivityBarTab = 'explorer' | 'search' | 'copilot' | 'terminal';
