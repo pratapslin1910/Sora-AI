@@ -116,6 +116,21 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+type RoutedTaskType = 'reasoning' | 'coding' | 'vision' | 'research' | 'assistant';
+
+function inferAssistantTaskType(prompt: string, hasImages: boolean, useWebSearch: boolean, hasExplicitUrl: boolean): RoutedTaskType {
+  if (hasImages) return 'vision';
+  if (useWebSearch || hasExplicitUrl) return 'research';
+  const text = prompt.toLowerCase();
+  if (/\b(?:code|coding|program|programming|debug|bug|compile|compiler|refactor|repository|repo|typescript|javascript|python|sql|api|function|script|readme\.md|package\.json|implement|unit test|test suite|build project)\b/.test(text)) {
+    return 'coding';
+  }
+  if (/\b(?:draft|email|e-mail|translate|translation|rewrite|rephrase|summari[sz]e|caption|social post|cover letter|write a message|compose|format this text|proofread)\b/.test(text)) {
+    return 'assistant';
+  }
+  return 'reasoning';
+}
+
 /** Rich Markdown renderer with enlarged, elegant typography & clear lists */
 const MarkdownContent = ({ content }: { content: string }) => {
   return (
@@ -894,6 +909,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
     // 1. Detect explicit URLs in user prompt (e.g., "read https://...", "summarize https://...")
     const urlRegex = /(https?:\/\/[^\s<>"{}|\\^`]+)/gi;
     const explicitUrls = trimmedInput.match(urlRegex) || [];
+    const requestTaskType = inferAssistantTaskType(trimmedInput, imageFiles.length > 0, webSearchEnabled, explicitUrls.length > 0);
 
     // Execute live web search or deep site reading
     let foundWebSources: WebSearchResult[] = [];
@@ -1064,7 +1080,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
       messagesToSend,
       {
         signal: abortController.signal,
-        taskType: imageFiles.length > 0 ? 'vision' : 'reasoning',
+        taskType: requestTaskType,
         recallMemory: true,
         currentChatId: activeChatIdRef.current,
         onRecall: (recalled) => {
@@ -1263,6 +1279,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
               followUpMessages as any,
               {
                 signal: abortController.signal,
+                taskType: requestTaskType,
                 recallMemory: false,
                 currentChatId: activeChatIdRef.current,
                 onToken: (tok) => {
