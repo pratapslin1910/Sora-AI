@@ -901,15 +901,13 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant, initialCopilot
           initialTask={initialCopilotTask}
           onClearInitialTask={onClearInitialCopilotTask}
           activeTab={activeTab}
-          onOpenFile={(filePath) => {
-            handleOpenFile({
-              name: filePath.split(/[/\\]/).pop() || filePath,
-              path: filePath,
-              isDirectory: false,
-              size: 0,
-              ext: filePath.split('.').pop() || '',
-            });
-          }}
+          onOpenFile={(filePath) => handleOpenFile({
+            name: filePath.split(/[/\\]/).pop() || filePath,
+            path: filePath,
+            isDirectory: false,
+            size: 0,
+            ext: filePath.split('.').pop() || '',
+          })}
           onApplyCodeToEditor={(code) => handleContentChange(code)}
           onRunTerminalCommand={handleRunTerminalCommand}
           onRefreshExplorer={() => loadWorkspace(currentPath)}
