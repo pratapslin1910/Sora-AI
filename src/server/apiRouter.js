@@ -17,6 +17,7 @@ import path from 'node:path';
 import { exec, execFile, spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { FreeLLMAPIProvider } from './FreeLLMAPIProvider.js';
+import { cacheProviderModels, getCachedProviderModels, selectTaskModel } from './taskModelRouter.js';
 import { listChats, getChatById, saveChat, deleteChat, deleteAllChats, deleteChatsOlderThan, searchChats } from './chatStore.js';
 import { performWebSearch, readSiteContent } from './webSearch.js';
 import {
@@ -357,6 +358,21 @@ export function getProvider() {
 
 export function setProvider(provider) {
   defaultProviderInstance = provider;
+  // Refresh the available-model catalogue asynchronously after provider changes.
+  if (provider && typeof provider.getModels === 'function') {
+    provider.getModels()
+      .then((models) => cacheProviderModels(provider, models))
+      .catch(() => {});
+  }
+}
+
+// Pre-warm task-aware routing so the first user prompt usually has the
+// available-model list before model selection starts.
+if (process.env.NODE_ENV !== 'test') {
+  const initialProvider = getProvider();
+  initialProvider.getModels()
+    .then((models) => cacheProviderModels(initialProvider, models))
+    .catch(() => {});
 }
 
 /**
@@ -622,6 +638,7 @@ export async function handleApiRequest(req, res, customProvider) {
   if (req.method === 'GET' && pathname === '/api/health') {
     try {
       const health = await provider.checkHealth();
+      if (Array.isArray(health.availableModels)) cacheProviderModels(provider, health.availableModels);
       jsonResponse(res, health.ok ? 200 : 503, health);
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: provider.formatError(err) });
@@ -633,6 +650,7 @@ export async function handleApiRequest(req, res, customProvider) {
   if (req.method === 'GET' && pathname === '/api/models') {
     try {
       const models = await provider.getModels();
+      cacheProviderModels(provider, models);
       jsonResponse(res, 200, { ok: true, models });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: provider.formatError(err) });
@@ -657,6 +675,8 @@ export async function handleApiRequest(req, res, customProvider) {
         : DEFAULT_CHAT_RETENTION_DAYS,
       permissionAllowance: saved.permissionAllowance || 'full_access',
       copilotSecurityMode: ['full_access', 'sandbox', 'strict'].includes(saved.copilotSecurityMode) ? saved.copilotSecurityMode : 'strict',
+      modelRoutingMode: saved.modelRoutingMode === 'manual' ? 'manual' : 'auto',
+      taskModels: saved.taskModels && typeof saved.taskModels === 'object' ? saved.taskModels : {},
       systemPromptVersion: SORA_PROMPT_VERSION,
       defaultIdentity: 'Sora',
     });
@@ -692,12 +712,34 @@ export async function handleApiRequest(req, res, customProvider) {
       copilotSecurityMode: ['full_access', 'sandbox', 'strict'].includes(body.copilotSecurityMode)
         ? body.copilotSecurityMode
         : (['full_access', 'sandbox', 'strict'].includes(current.copilotSecurityMode) ? current.copilotSecurityMode : 'strict'),
+      modelRoutingMode: body.modelRoutingMode === 'manual' ? 'manual' : (body.modelRoutingMode === 'auto' ? 'auto' : (current.modelRoutingMode === 'manual' ? 'manual' : 'auto')),
+      taskModels: (() => {
+        const allowedTasks = new Set(['reasoning', 'coding', 'vision', 'research', 'assistant']);
+        const incoming = body.taskModels && typeof body.taskModels === 'object' && !Array.isArray(body.taskModels) ? body.taskModels : {};
+        const previous = current.taskModels && typeof current.taskModels === 'object' && !Array.isArray(current.taskModels) ? current.taskModels : {};
+        const merged = { ...previous };
+        for (const [task, selectedModel] of Object.entries(incoming)) {
+          if (allowedTasks.has(task) && typeof selectedModel === 'string' && selectedModel.trim().length <= 200) {
+            merged[task] = selectedModel.trim();
+          }
+        }
+        return merged;
+      })(),
     };
     saveSettings(updated);
     if (extensionManagerInitialized) {
       extensionManager.permissionManager.setAllowanceMode(updated.permissionAllowance);
     }
-    jsonResponse(res, 200, { ok: true, message: 'Settings saved. Gateway reconfigured.' });
+    // New provider instance ensures gateway URL, API key and default model changes
+    // take effect without needing to restart the backend. The next health/models
+    // call refreshes the task router's per-provider model cache.
+    const reconfiguredProvider = new FreeLLMAPIProvider({
+      baseUrl: updated.baseUrl || undefined,
+      apiKey: updated.apiKey || undefined,
+      model: updated.model || undefined,
+    });
+    setProvider(reconfiguredProvider);
+    jsonResponse(res, 200, { ok: true, message: 'Settings saved. Gateway and model routing reconfigured.' });
     return true;
   }
 
@@ -711,7 +753,7 @@ export async function handleApiRequest(req, res, customProvider) {
       return true;
     }
 
-    const { messages, model, stream = true, temperature, recallMemory = true, currentChatId, taskType = 'reasoning' } = body;
+    const { messages, model: requestedModel, stream = true, temperature, recallMemory = true, currentChatId, taskType = 'reasoning' } = body;
 
     if (!messages || !Array.isArray(messages)) {
       jsonResponse(res, 400, { error: 'Missing or invalid "messages" in request body.' });
@@ -789,6 +831,23 @@ export async function handleApiRequest(req, res, customProvider) {
     const toolsPrompt = clientSystemPrompt.includes('AVAILABLE TOOLS:')
       ? ''
       : extensionManager.toolRegistry.formatToolsForPrompt() + (assistantDelegationToolPrompt ? '\n\n' + assistantDelegationToolPrompt : '');
+
+    // Resolve the model independently per task using the live FreeLLMAPI catalogue.
+    // An explicitly supplied request model wins; otherwise Settings controls Auto
+    // (task-aware) versus Manual (one model for every task).
+    const configuredTaskModels = settings.taskModels && typeof settings.taskModels === 'object' ? settings.taskModels : {};
+    const explicitRequestModel = typeof requestedModel === 'string' && requestedModel.trim() && requestedModel.trim().toLowerCase() !== 'auto';
+    const modelSelection = selectTaskModel({
+      taskType,
+      availableModels: getCachedProviderModels(provider),
+      defaultModel: explicitRequestModel ? requestedModel.trim() : (settings.model || provider.defaultModel || 'auto'),
+      routingMode: explicitRequestModel ? 'manual' : (settings.modelRoutingMode === 'manual' ? 'manual' : 'auto'),
+      taskModels: configuredTaskModels,
+    });
+    const model = modelSelection.model;
+    if (modelSelection.warning) {
+      console.warn('[TaskModelRouter]', modelSelection.warning);
+    }
 
     // Keep explicit saved user instructions/preferences available on every request,
     // even when they are not semantically close to the latest question.

@@ -199,6 +199,24 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant, initialCopilot
     const existing = tabs.find((t) => t.path === item.path);
     if (existing) {
       setActiveTabPath(item.path);
+      // Copilot and terminal actions can update a file externally while its tab
+      // remains mounted. Re-read clean tabs instead of returning with stale text.
+      // If the user has unsaved edits, preserve them rather than clobbering work.
+      if (existing.isDirty) return;
+      try {
+        const refreshed = await readWorkspaceFile(item.path);
+        if (refreshed.ok) {
+          setTabs((prev) => prev.map((tab) =>
+            tab.path === item.path && !tab.isDirty
+              ? { ...tab, content: refreshed.content, originalContent: refreshed.content, isDirty: false }
+              : tab
+          ));
+        } else {
+          showStatus(refreshed.error || 'File refresh failed', 'error');
+        }
+      } catch (err: any) {
+        showStatus(err.message || 'File refresh failed', 'error');
+      }
       return;
     }
 
@@ -883,15 +901,13 @@ export const IDEView: React.FC<IDEViewProps> = ({ onAskAssistant, initialCopilot
           initialTask={initialCopilotTask}
           onClearInitialTask={onClearInitialCopilotTask}
           activeTab={activeTab}
-          onOpenFile={(filePath) => {
-            handleOpenFile({
-              name: filePath.split(/[/\\]/).pop() || filePath,
-              path: filePath,
-              isDirectory: false,
-              size: 0,
-              ext: filePath.split('.').pop() || '',
-            });
-          }}
+          onOpenFile={(filePath) => handleOpenFile({
+            name: filePath.split(/[/\\]/).pop() || filePath,
+            path: filePath,
+            isDirectory: false,
+            size: 0,
+            ext: filePath.split('.').pop() || '',
+          })}
           onApplyCodeToEditor={(code) => handleContentChange(code)}
           onRunTerminalCommand={handleRunTerminalCommand}
           onRefreshExplorer={() => loadWorkspace(currentPath)}

@@ -62,6 +62,8 @@ export interface GatewaySettings {
   defaultIdentity?: string;
   permissionAllowance?: 'full_access' | 'sandbox' | 'strict';
   copilotSecurityMode?: 'full_access' | 'sandbox' | 'strict';
+  modelRoutingMode?: 'auto' | 'manual';
+  taskModels?: Partial<Record<'reasoning' | 'coding' | 'vision' | 'research' | 'assistant', string>>;
 }
 
 export { parseReasoningAndAnswer, deduplicateAnswer } from '../utils/responseParser';
@@ -85,6 +87,8 @@ export async function getSettings(): Promise<GatewaySettings> {
       defaultIdentity: data.defaultIdentity || 'Sora',
       permissionAllowance: data.permissionAllowance || 'full_access',
       copilotSecurityMode: data.copilotSecurityMode || 'strict',
+      modelRoutingMode: data.modelRoutingMode === 'manual' ? 'manual' : 'auto',
+      taskModels: data.taskModels && typeof data.taskModels === 'object' ? data.taskModels : {},
     };
   } catch {
     return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '', autoDeleteChats: false, chatRetentionDays: 30, permissionAllowance: 'full_access', copilotSecurityMode: 'strict' };
@@ -99,6 +103,8 @@ export async function saveSettings(settings: {
   chatRetentionDays?: number;
   permissionAllowance?: 'full_access' | 'sandbox' | 'strict';
   copilotSecurityMode?: 'full_access' | 'sandbox' | 'strict';
+  modelRoutingMode?: 'auto' | 'manual';
+  taskModels?: Partial<Record<'reasoning' | 'coding' | 'vision' | 'research' | 'assistant', string>>;
 }): Promise<boolean> {
   try {
     const res = await fetch('/api/settings', {
@@ -223,6 +229,7 @@ export async function streamChatMessage(
         try {
           const payload = JSON.parse(payloadStr);
           if (payload.error) {
+            emitModelActivity('error', { error: String(payload.error), model: lastReportedModel, task: taskType });
             onError(payload.error);
             return;
           }
@@ -259,6 +266,7 @@ export async function streamChatMessage(
       try {
         const payload = JSON.parse(payloadStr);
         if (payload.error) {
+          emitModelActivity('error', { error: String(payload.error), model: lastReportedModel, task: taskType });
           onError(payload.error);
           return;
         }

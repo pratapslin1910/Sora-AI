@@ -51,6 +51,10 @@ export class FreeLLMAPIProvider {
     if (msg.includes('401') || msg.includes('Invalid API key') || msg.includes('authentication_error')) {
       return 'Invalid API key. Please check your FREELLMAPI_API_KEY environment variable.';
     }
+
+    if (/no candidate model has a configured, usable provider key|no key configured for (?:their )?platform|all models exhausted/i.test(msg)) {
+      return 'FreeLLMAPI could not generate a response because no usable provider API key is configured for the selected model or its upstream platform. Open the FreeLLMAPI dashboard, add or enable a provider key for that model\'s platform, and retry. Selecting a model in Sora does not configure upstream provider credentials. Gateway detail: ' + msg;
+    }
     if (msg.includes('429') || msg.includes('Too Many Requests')) {
       return 'Rate limit exceeded on FreeLLMAPI upstream provider. Please try another model or try again later.';
     }

@@ -53,6 +53,7 @@ import {
   MemoryItem,
   RecalledContextPayload,
   checkGatewayHealth,
+  fetchAvailableModels,
   streamChatMessage,
   listChatHistory,
   saveChatSession,
@@ -113,6 +114,21 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+type RoutedTaskType = 'reasoning' | 'coding' | 'vision' | 'research' | 'assistant';
+
+function inferAssistantTaskType(prompt: string, hasImages: boolean, useWebSearch: boolean, hasExplicitUrl: boolean): RoutedTaskType {
+  if (hasImages) return 'vision';
+  if (useWebSearch || hasExplicitUrl) return 'research';
+  const text = prompt.toLowerCase();
+  if (/\b(?:code|coding|program|programming|debug|bug|compile|compiler|refactor|repository|repo|typescript|javascript|python|sql|api|function|script|readme\.md|package\.json|implement|unit test|test suite|build project)\b/.test(text)) {
+    return 'coding';
+  }
+  if (/\b(?:draft|email|e-mail|translate|translation|rewrite|rephrase|summari[sz]e|caption|social post|cover letter|write a message|compose|format this text|proofread)\b/.test(text)) {
+    return 'assistant';
+  }
+  return 'reasoning';
 }
 
 /** Rich Markdown renderer with enlarged, elegant typography & clear lists */
@@ -518,6 +534,9 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
   const [settingsBaseUrl, setSettingsBaseUrl] = useState('');
   const [settingsApiKey, setSettingsApiKey] = useState('');
   const [settingsModel, setSettingsModel] = useState('');
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelRoutingMode, setModelRoutingMode] = useState<'auto' | 'manual'>('auto');
+  const [taskModels, setTaskModels] = useState<Partial<Record<'reasoning' | 'coding' | 'vision' | 'research' | 'assistant', string>>>({});
   const [settingsApiKeySet, setSettingsApiKeySet] = useState(false);
   const [autoDeleteChats, setAutoDeleteChats] = useState(false);
   const [chatRetentionDays, setChatRetentionDays] = useState(30);
@@ -536,6 +555,10 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
       setSettingsApiKey(s.apiKeyMasked || '');
       setSettingsApiKeySet(Boolean(s.apiKeySet));
       setSettingsModel(s.model || '');
+      setModelRoutingMode(s.modelRoutingMode === 'manual' ? 'manual' : 'auto');
+      setTaskModels(s.taskModels || {});
+      const models = await fetchAvailableModels();
+      setAvailableModels(models);
       setAutoDeleteChats(Boolean(s.autoDeleteChats));
       setChatRetentionDays(Math.max(1, Number(s.chatRetentionDays) || 30));
       setPermissionAllowance(s.permissionAllowance || 'full_access');
@@ -559,6 +582,8 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
         baseUrl: settingsBaseUrl.trim(),
         apiKey: settingsApiKey.trim(),
         model: settingsModel.trim(),
+        modelRoutingMode,
+        taskModels,
         autoDeleteChats,
         chatRetentionDays,
         permissionAllowance,
@@ -884,6 +909,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
     // 1. Detect explicit URLs in user prompt (e.g., "read https://...", "summarize https://...")
     const urlRegex = /(https?:\/\/[^\s<>"{}|\\^`]+)/gi;
     const explicitUrls = trimmedInput.match(urlRegex) || [];
+    const requestTaskType = inferAssistantTaskType(trimmedInput, imageFiles.length > 0, webSearchEnabled, explicitUrls.length > 0);
 
     // Execute live web search or deep site reading
     let foundWebSources: WebSearchResult[] = [];
@@ -1054,7 +1080,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
       messagesToSend,
       {
         signal: abortController.signal,
-        taskType: imageFiles.length > 0 ? 'vision' : 'reasoning',
+        taskType: requestTaskType,
         recallMemory: true,
         currentChatId: activeChatIdRef.current,
         onRecall: (recalled) => {
@@ -1253,6 +1279,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
               followUpMessages as any,
               {
                 signal: abortController.signal,
+                taskType: requestTaskType,
                 recallMemory: false,
                 currentChatId: activeChatIdRef.current,
                 onToken: (tok) => {
@@ -2426,6 +2453,63 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
               <p className="text-[11px] text-slate-500 mt-1">
                 Leave blank or set to &apos;auto&apos; to let the gateway automatically select the model.
               </p>
+            </div>
+
+            {/* Task-aware model routing */}
+            <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4 space-y-3">
+              <div>
+                <h4 className="text-xs font-semibold text-white">Task-aware Model Routing</h4>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Auto selects from the models FreeLLMAPI actually lists for each task. Manual pins the global Model Name above. Task overrides take priority only in Auto mode.
+                </p>
+              </div>
+              <select
+                aria-label="Model routing mode"
+                value={modelRoutingMode}
+                onChange={(e) => setModelRoutingMode(e.target.value === 'manual' ? 'manual' : 'auto')}
+                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2.5 text-xs text-white focus:outline-none focus:border-cyan-500/60"
+              >
+                <option value="auto">Auto — route reasoning, coding, vision, research and assistant tasks</option>
+                <option value="manual">Manual — use the global model for every task</option>
+              </select>
+              <div className="space-y-2">
+                {([
+                  ['reasoning', 'Reasoning'],
+                  ['coding', 'Coding'],
+                  ['vision', 'Vision / image analysis'],
+                  ['research', 'Research / web synthesis'],
+                  ['assistant', 'General assistant'],
+                ] as const).map(([task, label]) => (
+                  <label key={task} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
+                    <span className="text-xs text-slate-300">{label}</span>
+                    <select
+                      aria-label={label + ' model override'}
+                      value={taskModels[task] || ''}
+                      disabled={modelRoutingMode === 'manual'}
+                      onChange={(e) => setTaskModels((prev) => ({ ...prev, [task]: e.target.value }))}
+                      className="min-w-0 w-full bg-black/40 border border-white/10 rounded-lg px-2.5 py-2 text-[11px] text-white disabled:opacity-40"
+                    >
+                      <option value="">Auto select</option>
+                      {availableModels.map((modelId) => (
+                        <option key={modelId} value={modelId}>{modelId}</option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+              </div>
+              <p className="text-[10px] text-slate-500 leading-relaxed">
+                Model names are only capability hints; providers do not always expose capability metadata. Check the bottom status bar during a request to see the model FreeLLMAPI reports. An explicit per-task model override should name a model that supports that task.
+              </p>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[10px] text-slate-500">{availableModels.length} model IDs discovered</span>
+                <button
+                  type="button"
+                  onClick={async () => setAvailableModels(await fetchAvailableModels())}
+                  className="px-2.5 py-1.5 rounded-lg border border-white/10 text-[10px] text-slate-300 hover:bg-white/[0.06]"
+                >
+                  Refresh model list
+                </button>
+              </div>
             </div>
 
             {/* Permission Allowance (PA) */}
