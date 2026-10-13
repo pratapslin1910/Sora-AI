@@ -129,7 +129,7 @@ export function selectTaskModel({
       model: 'auto',
       task,
       reason: 'No explicitly vision-capable ID was listed; request gateway auto routing as a fallback.',
-      warning: 'FreeLLMAPI does not list a model whose ID clearly identifies vision capability. Configure a vision model override if auto routing cannot process images.',
+      warning: 'FreeLLMAPI does not list a clearly vision-capable model ID. Configure a vision model override if auto routing cannot process images.',
     };
   }
 
