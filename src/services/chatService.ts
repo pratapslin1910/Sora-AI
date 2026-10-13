@@ -87,7 +87,7 @@ export async function getSettings(): Promise<GatewaySettings> {
       copilotSecurityMode: data.copilotSecurityMode || 'strict',
     };
   } catch {
-    return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '', autoDeleteChats: false, chatRetentionDays: 30, permissionAllowance: 'full_access' };
+    return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '', autoDeleteChats: false, chatRetentionDays: 30, permissionAllowance: 'full_access', copilotSecurityMode: 'strict' };
   }
 }
 
