@@ -229,6 +229,7 @@ export async function streamChatMessage(
         try {
           const payload = JSON.parse(payloadStr);
           if (payload.error) {
+            emitModelActivity('error', { error: String(payload.error), model: lastReportedModel, task: taskType });
             onError(payload.error);
             return;
           }
@@ -265,6 +266,7 @@ export async function streamChatMessage(
       try {
         const payload = JSON.parse(payloadStr);
         if (payload.error) {
+          emitModelActivity('error', { error: String(payload.error), model: lastReportedModel, task: taskType });
           onError(payload.error);
           return;
         }

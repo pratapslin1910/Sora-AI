@@ -5,6 +5,16 @@ import { FreeLLMAPIProvider } from '../src/server/FreeLLMAPIProvider.js';
 import { handleApiRequest } from '../src/server/apiRouter.js';
 
 describe('FreeLLMAPIProvider Unit & Mock Tests', () => {
+  it('explains missing upstream provider credentials instead of implying model selection guarantees availability', () => {
+    const provider = new FreeLLMAPIProvider();
+    const error = provider.formatError(new Error(
+      'No candidate model has a configured, usable provider key. Add provider API keys in the dashboard. All models exhausted. 1 model skipped: no key configured for their platform.'
+    ));
+    assert.match(error, /no usable provider API key is configured/i);
+    assert.match(error, /FreeLLMAPI dashboard/i);
+    assert.match(error, /Selecting a model in Sora does not configure upstream provider credentials/i);
+  });
+
   it('uses a three-minute default timeout while allowing explicit overrides', () => {
     assert.equal(new FreeLLMAPIProvider().timeoutMs, 180000);
     assert.equal(new FreeLLMAPIProvider({ timeoutMs: 2500 }).timeoutMs, 2500);
