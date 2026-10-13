@@ -16,7 +16,6 @@ const catalogue = [
   { id: 'auto', execution_status: 'ready' },
   { id: 'auto:fast', execution_status: 'ready' },
   { id: 'fusion', execution_status: 'ready' },
-  { id: 'claude-sonnet-4-5', execution_status: 'ready' },
   { id: 'gemini-2.5-flash', execution_status: 'ready' },
 ];
 
@@ -37,10 +36,11 @@ test('router aliases are not classified as concrete models', () => {
   assert.equal(isRouterModelId('auto'), true);
   assert.equal(isRouterModelId('AUTO:fast'), true);
   assert.equal(isRouterModelId('fusion'), true);
-  assert.equal(isRouterModelId('claude-sonnet-4-5'), true);
   assert.equal(isConcreteModelId('auto'), false);
   assert.equal(isConcreteModelId('fusion'), false);
   assert.equal(isConcreteModelId('deepseek-chat'), true);
+  assert.equal(isRouterModelId('claude-sonnet-4-5'), false);
+  assert.equal(isConcreteModelId('claude-sonnet-4-5'), true);
 });
 
 test('random selection chooses only from supplied available concrete models', () => {
