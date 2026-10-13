@@ -92,6 +92,16 @@ export function selectTaskModel({
   }
 
   if (!catalog.length) {
+    // A vision request must not be sent to a configured text-only model just
+    // because model discovery has not completed yet.
+    if (task === 'vision') {
+      return {
+        model: 'auto',
+        task,
+        reason: 'Model catalogue unavailable; delegate vision-capability resolution to FreeLLMAPI auto routing.',
+        warning: 'Model discovery is unavailable for this vision request. FreeLLMAPI auto routing will be used; configure a vision override if the gateway cannot route images.',
+      };
+    }
     return {
       model: defaultId.toLowerCase() === 'auto' ? 'auto' : defaultId,
       task,
