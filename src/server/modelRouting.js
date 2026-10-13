@@ -12,7 +12,7 @@ export function normalizeModelId(value) {
 
 export function isRouterModelId(value) {
   const id = normalizeModelId(value).toLowerCase();
-  return ROUTER_MODEL_IDS.has(id) || id.startsWith('auto:') || id.startsWith('claude-');
+  return ROUTER_MODEL_IDS.has(id) || id.startsWith('auto:');
 }
 
 export function isConcreteModelId(value) {
