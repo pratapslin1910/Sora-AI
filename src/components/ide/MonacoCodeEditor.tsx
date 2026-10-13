@@ -49,6 +49,13 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
   setMinimapEnabled,
 }) => {
   const editorRef = useRef<any>(null);
+  const onSaveRef = useRef(onSave);
+  const onSaveAsRef = useRef(onSaveAs);
+
+  useEffect(() => {
+    onSaveRef.current = onSave;
+    onSaveAsRef.current = onSaveAs;
+  }, [onSave, onSaveAs]);
 
   // Setup Monaco mount handlers
   const handleEditorDidMount: OnMount = (editor, monaco) => {
@@ -64,14 +71,14 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
 
     // Bind Ctrl+S for saving
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-      onSave();
+      onSaveRef.current();
     });
 
     // Bind Ctrl+Shift+S for Save As
     editor.addCommand(
       monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS,
       () => {
-        onSaveAs();
+        onSaveAsRef.current();
       }
     );
 

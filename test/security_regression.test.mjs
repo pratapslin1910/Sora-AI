@@ -468,10 +468,39 @@ describe('FIX 7 — Terminal exec: exit code and catastrophic command blocking',
     await new Promise((resolve) => server.close(resolve));
   });
 
-  it('successful command returns exitCode: 0 and ok: true', async () => {
+  const authorizedExecHeaders = async () => {
+    const tokenRes = await fetch(`${baseUrl}/api/ide/execution-token`, {
+      headers: { Origin: 'http://127.0.0.1', 'X-Sora-Token-Request': '1' },
+    });
+    assert.equal(tokenRes.status, 200);
+    const { token } = await tokenRes.json();
+    return { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1', 'X-Sora-Execution-Token': token };
+  };
+
+  it('rejects terminal execution when Origin is missing', async () => {
     const res = await fetch(`${baseUrl}/api/ide/exec`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'echo SHOULD_NOT_RUN' }),
+    });
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).ok, false);
+  });
+
+  it('rejects terminal execution without a capability token even from a trusted Origin', async () => {
+    const res = await fetch(`${baseUrl}/api/ide/exec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1' },
+      body: JSON.stringify({ command: 'echo SHOULD_NOT_RUN' }),
+    });
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).ok, false);
+  });
+
+  it('successful command returns exitCode: 0 and ok: true', async () => {
+    const res = await fetch(`${baseUrl}/api/ide/exec`, {
+      method: 'POST',
+      headers: await authorizedExecHeaders(),
       body: JSON.stringify({ command: 'echo hello' }),
     });
     const data = await res.json();
@@ -483,7 +512,7 @@ describe('FIX 7 — Terminal exec: exit code and catastrophic command blocking',
   it('exec always includes exitCode field', async () => {
     const res = await fetch(`${baseUrl}/api/ide/exec`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: await authorizedExecHeaders(),
       body: JSON.stringify({ command: 'echo test' }),
     });
     const data = await res.json();
@@ -493,7 +522,7 @@ describe('FIX 7 — Terminal exec: exit code and catastrophic command blocking',
   it('catastrophic command is blocked with HTTP 403', async () => {
     const res = await fetch(`${baseUrl}/api/ide/exec`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: await authorizedExecHeaders(),
       body: JSON.stringify({ command: 'format C:' }),
     });
     assert.equal(res.status, 403);
@@ -561,5 +590,41 @@ describe('FIX 10 — GitHub Actions CI workflow exists', () => {
     assert.ok(content.includes('npm test') || content.includes('npm run test'), 'Must have test step');
     assert.ok(content.includes('npm run build') || content.includes('vite build'), 'Must have build step');
     assert.ok(content.includes('lint') || content.includes('oxlint'), 'Must have lint step');
+  });
+});
+
+
+// C2 — Application launch must not escape the apps permission into a shell.
+describe('FIX — Windows application launch cannot execute arbitrary shell commands', () => {
+  it('rejects command interpreters through windows_launch_app', async () => {
+    const { windows_launch_app } = await import('../extensions/windows/index.js');
+    for (const appName of ['cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh']) {
+      const result = await windows_launch_app({ appName, args: ['/c', 'calc'] });
+      assert.equal(result.ok, false, `${appName} must not be launchable via apps permission`);
+    }
+  });
+
+  it('rejects arbitrary executable paths', async () => {
+    const { windows_launch_app } = await import('../extensions/windows/index.js');
+    const result = await windows_launch_app({ appName: 'C:\\Temp\\untrusted.exe', args: [] });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /Unsupported application/);
+  });
+
+  it('does not pass command arguments to Windows Terminal through apps permission', async () => {
+    const { windows_launch_app } = await import('../extensions/windows/index.js');
+    const result = await windows_launch_app({ appName: 'wt', args: ['cmd', '/c', 'calc'] });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /arguments are disabled/);
+  });
+});
+
+describe('Chrome URL launch injection regression', () => {
+  it('passes URLs through a shell-free process argument list', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'extensions', 'chrome', 'index.js'), 'utf-8');
+    assert.ok(source.includes('spawn(executable, args'));
+    assert.ok(source.includes('shell: false'));
+    assert.equal(source.includes('start "" "${chromePath}" "${targetUrl}"'), false);
+    assert.doesNotMatch(source, /const cmd = `start[^\n]*\$\{targetUrl\}/);
   });
 });

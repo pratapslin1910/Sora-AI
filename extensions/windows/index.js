@@ -2,7 +2,7 @@
  * SORA Windows Automation Extension Implementation
  */
 
-import { exec } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -55,63 +55,72 @@ const APP_ALIASES = {
  * Launch an application on Windows.
  */
 export async function windows_launch_app(args) {
-  const { appName, args: appArgs = [] } = args;
-  if (!appName) return { ok: false, error: 'appName is required' };
-
-  const rawLower = appName.toLowerCase().trim();
-  const targetExe = APP_ALIASES[rawLower] || appName.replace(/["';`$]/g, '').trim();
-
-  // Handle arguments: whether passed as string or array
-  let joinedArgs = '';
-  if (Array.isArray(appArgs)) {
-    joinedArgs = appArgs.map((a) => {
-      const s = String(a).trim();
-      if ((s.startsWith('"') && s.endsWith('"')) || s.startsWith('-') || s.startsWith('/')) {
-        return s;
-      }
-      return s.includes(' ') ? `"${s}"` : s;
-    }).join(' ');
-  } else if (typeof appArgs === 'string') {
-    joinedArgs = appArgs.trim();
+  const { appName, args: appArgs = [] } = args || {};
+  if (typeof appName !== 'string' || !appName.trim()) {
+    return { ok: false, error: 'appName is required' };
   }
 
-  // If launching a terminal / console application, ensure it opens visibly on the user's desktop
-  const isConsoleApp = /^(wt|wt\.exe|cmd|cmd\.exe|powershell|powershell\.exe|pwsh|pwsh\.exe)$/i.test(targetExe);
+  const rawLower = appName.toLowerCase().trim();
+  const shellAliases = new Set([
+    'cmd', 'command prompt', 'cmd.exe',
+    'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe',
+  ]);
+  if (shellAliases.has(rawLower)) {
+    return {
+      ok: false,
+      error: 'Command interpreters cannot be launched with the apps permission. Use terminal_execute with terminal permission instead.',
+    };
+  }
 
+  // Only launch explicitly supported applications; never treat an LLM-provided
+  // path or executable name as a trusted program.
+  const targetExe = APP_ALIASES[rawLower];
+  if (!targetExe) {
+    return { ok: false, error: `Unsupported application "${appName}". Use an approved application alias.` };
+  }
+
+  let argv;
+  if (Array.isArray(appArgs)) {
+    if (appArgs.some((arg) => typeof arg !== 'string')) {
+      return { ok: false, error: 'Application arguments must be an array of strings.' };
+    }
+    argv = appArgs.map((arg) => arg.trim());
+  } else if (typeof appArgs === 'string' && appArgs.trim() === '') {
+    argv = [];
+  } else {
+    return { ok: false, error: 'Application arguments must be an array of strings.' };
+  }
+
+  // Windows Terminal can dispatch arbitrary shell commands through its args.
+  // Launch it only without additional arguments; command execution has its own
+  // separately permissioned tool.
+  if (targetExe.toLowerCase() === 'wt.exe' && argv.length > 0) {
+    return { ok: false, error: 'Windows Terminal arguments are disabled for apps-permission requests.' };
+  }
+  if (argv.some((arg) => /[\\r\\n\\0]/.test(arg))) {
+    return { ok: false, error: 'Application arguments cannot contain control characters.' };
+  }
+
+  const isConsoleApp = targetExe.toLowerCase() === 'wt.exe';
   return new Promise((resolve) => {
-    // For console apps (like Windows Terminal, cmd, powershell), don't hide windows
-    const cmd = `start "" "${targetExe}" ${joinedArgs}`.trim();
-    exec(cmd, { windowsHide: !isConsoleApp }, (err) => {
-      if (err) {
-        // Fallback: if wt.exe fails, fallback to cmd or powershell
-        if (targetExe === 'wt.exe') {
-          let dirMatch = joinedArgs.match(/-d\s+["']?([^"']+)["']?/i);
-          let targetDir = dirMatch ? dirMatch[1] : '';
-          const fallbackCmd = targetDir
-            ? `start "Command Prompt" cmd.exe /k "cd /d "${targetDir}""`
-            : `start "Command Prompt" cmd.exe`;
-          exec(fallbackCmd, { windowsHide: false }, (fbErr) => {
-            if (fbErr) {
-              resolve({ ok: false, error: `Could not launch terminal: ${fbErr.message}` });
-            } else {
-              resolve({ ok: true, data: { appName, executable: 'cmd.exe', launched: true, fallback: true } });
-            }
-          });
-          return;
-        }
+    let child;
+    try {
+      child = spawn(targetExe, argv, {
+        shell: false,
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: !isConsoleApp,
+      });
+    } catch (err) {
+      resolve({ ok: false, error: `Could not launch "${appName}": ${err.message}` });
+      return;
+    }
 
-        // Fallback to powershell Start-Process
-        const psArgs = joinedArgs ? `-ArgumentList '${joinedArgs.replace(/'/g, "''")}'` : '';
-        const psCmd = `powershell -Command "Start-Process '${targetExe}' ${psArgs} -ErrorAction Stop"`;
-        exec(psCmd, (psErr) => {
-          if (psErr) {
-            resolve({ ok: false, error: `Could not launch "${appName}": ${psErr.message}` });
-          } else {
-            resolve({ ok: true, data: { appName, executable: targetExe, launched: true, launcher: 'powershell' } });
-          }
-        });
-        return;
-      }
+    child.once('error', (err) => {
+      resolve({ ok: false, error: `Could not launch "${appName}": ${err.message}` });
+    });
+    child.once('spawn', () => {
+      child.unref();
       resolve({ ok: true, data: { appName, executable: targetExe, launched: true } });
     });
   });

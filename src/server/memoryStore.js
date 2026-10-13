@@ -357,7 +357,7 @@ export function detectAndExtractMemories(text) {
   }
 
   // 3. User Identity / Preference / Project context ("My name is X", "My strategy is X", "I prefer X", "Our stack is X")
-  const preferenceMatch = clean.match(/(?:my\s+(?:name|project|strategy|stack|preference|system)|i\s+prefer)\s+is\s+([^\n.]+[\n.]?)/i);
+  const preferenceMatch = clean.match(/(?:my\s+(?:name|project|strategy|stack|preference|system)\s+is\s+|i\s+prefer\s+)([^\n.]+[\n.]?)/i);
   if (preferenceMatch && preferenceMatch[0]) {
     const prefStatement = preferenceMatch[0].trim();
     if (prefStatement.length > 8 && !detected.some((d) => d.content === prefStatement)) {

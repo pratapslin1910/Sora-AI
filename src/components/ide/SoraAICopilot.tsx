@@ -96,6 +96,12 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const isAgentActiveRef = useRef<boolean>(false);
+
+  useEffect(() => () => {
+    isAgentActiveRef.current = false;
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+  }, []);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const permissionAllowanceRef = useRef<'full_access' | 'sandbox' | 'strict'>('full_access');
 
@@ -146,6 +152,17 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
     args: Record<string, any>
   ): Promise<{ ok: boolean; data?: any; error?: string }> => {
     const startTime = Date.now();
+    const strictMutations = new Set(['write_file', 'create_item', 'rename_item', 'delete_item', 'run_command']);
+    if (permissionAllowanceRef.current === 'strict' && strictMutations.has(tool)) {
+      const argsPreview = JSON.stringify(args, null, 2).slice(0, 1600);
+      const approved = typeof window !== 'undefined' && window.confirm(
+        `Strict Mode confirmation\\n\\nSora wants to perform "${tool}" with these arguments:\\n\\n${argsPreview}\\n\\nAllow this action?`
+      );
+      if (!approved) return { ok: false, error: 'The user declined the Strict Mode confirmation.' };
+      // Existing action-specific checks consume this value. It is assigned only
+      // after the user explicitly approves this request.
+      args = { ...args, __confirmed: true };
+    }
     try {
       if (tool === 'list_dir') {
         const path = args.path || '';
@@ -459,6 +476,14 @@ When completely finished, provide your final answer with no further tool calls.`
 
         // Stream next step from LLM
         await new Promise<void>((resolve) => {
+          let settled = false;
+          const settle = () => {
+            if (settled) return;
+            settled = true;
+            abortController.signal.removeEventListener('abort', settle);
+            resolve();
+          };
+          abortController.signal.addEventListener('abort', settle, { once: true });
           streamChatMessage(internalChat, {
             signal: abortController.signal,
             onToken: (token) => {
@@ -475,10 +500,10 @@ When completely finished, provide your final answer with no further tool calls.`
                 return copy;
               });
             },
-            onDone: () => resolve(),
+            onDone: settle,
             onError: (err) => {
               stepResponseText += `\n\n⚠️ Error: ${err}`;
-              resolve();
+              settle();
             },
           });
         });

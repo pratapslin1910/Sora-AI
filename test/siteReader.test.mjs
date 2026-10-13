@@ -57,6 +57,13 @@ describe('Site Reader & Content Extraction Tests', () => {
     assert.equal(empty.content, '');
   });
 
+  it('blocks 6to4, Teredo, and hexadecimal IPv4-mapped private addresses', async () => {
+    const { isPrivateOrRestrictedIP } = await import('../src/server/siteReader.js');
+    assert.equal(isPrivateOrRestrictedIP('2002:7f00:1::'), true);
+    assert.equal(isPrivateOrRestrictedIP('2001:0000:4136:e378:8000:63bf:3fff:fdd2'), true);
+    assert.equal(isPrivateOrRestrictedIP('::ffff:7f00:1'), true);
+  });
+
   it('reads live Wikipedia page and extracts article text', async () => {
     const res = await readSiteContent('https://en.wikipedia.org/wiki/Algorithmic_trading', { timeoutMs: 9000 });
     assert.equal(res.readSuccess, true);

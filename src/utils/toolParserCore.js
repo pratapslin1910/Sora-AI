@@ -67,18 +67,8 @@ function parseJsonToolCalls(text) {
       if (parsed && typeof parsed.tool === 'string' && parsed.tool.trim()) calls.push({ tool: parsed.tool.trim(), args: parsed.args && typeof parsed.args === 'object' ? parsed.args : {}, rawBlock: tag[0] });
     } catch { /* malformed candidate */ }
   }
-  if (calls.length === 0) {
-    let pos = 0;
-    while (pos < text.length) {
-      const balanced = extractBalancedJsonObject(text, pos);
-      if (!balanced) break;
-      try {
-        const parsed = JSON.parse(balanced.jsonString);
-        if (parsed && typeof parsed.tool === 'string' && parsed.tool.trim()) calls.push({ tool: parsed.tool.trim(), args: parsed.args && typeof parsed.args === 'object' ? parsed.args : {}, rawBlock: balanced.jsonString });
-      } catch { /* not a tool call */ }
-      pos = balanced.startIndex + 1;
-    }
-  }
+  // Only explicitly tagged <tool_call> JSON is executable. Quoted examples and
+  // untrusted prose containing tool-shaped JSON must never run as commands.
   return calls;
 }
 function canonicalize(value) {
@@ -138,7 +128,15 @@ export function stripToolCallsFromText(text) {
     }
     if (!removed) break;
   }
-  return cleaned.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  // Normalize prose whitespace without collapsing spaces inside code fences.
+  const codeBlocks = [];
+  cleaned = cleaned.replace(/```[\s\S]*?(?:```|$)/g, (block) => {
+    const marker = '\u0001SORA_CODE_' + codeBlocks.length + '\u0002';
+    codeBlocks.push(block);
+    return marker;
+  });
+  cleaned = cleaned.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  return cleaned.replace(/\u0001SORA_CODE_(\d+)\u0002/g, (_match, index) => codeBlocks[Number(index)] ?? '');
 }
 export function sanitizeContentForModel(content) {
   return typeof content === 'string' ? stripToolCallsFromText(content) : '';

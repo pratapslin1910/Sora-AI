@@ -117,21 +117,15 @@ export class ExtensionManager {
     this.extensionDirs.set(id, dirPath);
     this.extensionErrors.delete(id);
 
-    // Apply persisted permissions or initialize defaults
+    // Least privilege: discovering a manifest does not grant requested permissions.
     const state = this._persistedState[id] || {};
-    if (state.permissions) {
-      this.permissionManager.setPermissions(id, state.permissions);
-    } else {
-      // Default: grant permissions requested by bundled initial extensions on first run
-      const defaultGrants = {};
-      for (const p of manifest.permissions || []) {
-        defaultGrants[p] = true;
-      }
-      this.permissionManager.setPermissions(id, defaultGrants);
-    }
+    const storedPermissions = state.permissions && typeof state.permissions === 'object'
+      ? state.permissions
+      : {};
+    this.permissionManager.setPermissions(id, storedPermissions);
 
-    // Default enabled state: true for standard bundled extensions unless explicitly disabled
-    const shouldEnable = state.enabled !== undefined ? Boolean(state.enabled) : true;
+    // Unrecognized/new extensions stay disabled unless the user explicitly enabled them.
+    const shouldEnable = state.enabled === true;
     if (shouldEnable) {
       try {
         await this.enableExtension(id, false); // do not re-save during init scan
@@ -349,15 +343,16 @@ export class ExtensionManager {
       }
     }
 
-    // Load and enable
+    // Import for review only. Do not execute newly imported code or grant permissions.
     await this._loadExtensionFromDir(targetDir);
-    await this.enableExtension(id, true);
 
     return {
       ok: true,
       id,
       name: manifest.name,
-      message: `Extension "${manifest.name}" imported and enabled successfully.`,
+      enabled: this._isExtensionActive(id),
+      permissionsGranted: this.permissionManager.getPermissions(id, manifest.permissions || []),
+      message: `Extension "${manifest.name}" imported for review. Enable it and grant permissions explicitly in Settings.`,
     };
   }
 

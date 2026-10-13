@@ -145,10 +145,18 @@ describe('IDE & Workspace Endpoints Tests', () => {
     assert.equal(checkDelete.status, 404);
   });
 
+  const authorizedExecHeaders = async () => {
+    const tokenRes = await fetch(`${baseUrl}/api/ide/execution-token`, {
+      headers: { Origin: 'http://127.0.0.1', 'X-Sora-Token-Request': '1' },
+    });
+    const { token } = await tokenRes.json();
+    return { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1', 'X-Sora-Execution-Token': token };
+  };
+
   it('POST /api/ide/exec executes commands in active workspace', async () => {
     const execRes = await fetch(`${baseUrl}/api/ide/exec`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: await authorizedExecHeaders(),
       body: JSON.stringify({ command: 'echo "Sora Terminal OK"' }),
     });
     assert.equal(execRes.status, 200);

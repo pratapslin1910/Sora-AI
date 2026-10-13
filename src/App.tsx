@@ -7,6 +7,7 @@ import { checkGatewayHealth, GatewayHealth } from './services/chatService';
 
 function App() {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('assistant');
+  const [ideMounted, setIdeMounted] = useState(false);
   const [gatewayStatus, setGatewayStatus] = useState<GatewayHealth>({
     ok: false,
     status: 'checking',
@@ -30,10 +31,19 @@ function App() {
     return () => clearInterval(interval);
   }, [pollGateway]);
 
+  const handleTabChange = (tab: WorkspaceTab) => {
+    setActiveTab(tab);
+    if (tab === 'ide') setIdeMounted(true);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('sora:tab-change'));
+      window.speechSynthesis?.cancel();
+    }
+  };
+
   // IDE can ask Sora a question → jump to Assistant tab
   const handleAskAssistant = (prompt: string) => {
     setAssistantPrompt(prompt);
-    setActiveTab('assistant');
+    handleTabChange('assistant');
   };
 
   return (
@@ -41,27 +51,35 @@ function App() {
       {/* Top Nav */}
       <TopNavbar
         activeTab={activeTab}
-        onTabChange={setActiveTab}
+        onTabChange={handleTabChange}
         gatewayStatus={gatewayStatus}
         onOpenSettings={() => {
-          setActiveTab('assistant');
+          handleTabChange('assistant');
           setSettingsOpen(true);
         }}
       />
 
       {/* Main Content */}
       <main className="flex-1 overflow-hidden relative flex bg-[#000000]">
-        {activeTab === 'assistant' && (
+        <div
+          className={activeTab === 'assistant' ? 'flex flex-1 min-w-0 min-h-0' : 'hidden'}
+          aria-hidden={activeTab !== 'assistant'}
+        >
           <AssistantView
             initialPrompt={assistantPrompt}
             onClearInitialPrompt={() => setAssistantPrompt(undefined)}
             settingsOpen={settingsOpen}
             onSettingsOpenChange={setSettingsOpen}
           />
-        )}
+        </div>
 
-        {activeTab === 'ide' && (
-          <IDEView onAskAssistant={handleAskAssistant} />
+        {ideMounted && (
+          <div
+            className={activeTab === 'ide' ? 'flex flex-1 min-w-0 min-h-0' : 'hidden'}
+            aria-hidden={activeTab !== 'ide'}
+          >
+            <IDEView onAskAssistant={handleAskAssistant} />
+          </div>
         )}
       </main>
 

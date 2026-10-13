@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { exec } from 'node:child_process';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { FreeLLMAPIProvider } from './FreeLLMAPIProvider.js';
 import { listChats, getChatById, saveChat, deleteChat, deleteAllChats, deleteChatsOlderThan, searchChats } from './chatStore.js';
 import { performWebSearch, readSiteContent } from './webSearch.js';
@@ -40,6 +41,7 @@ const SETTINGS_FILE = path.resolve(__dirname, '../../data/sora_settings.json');
 const DEFAULT_BASE_URL = 'http://127.0.0.1:31415/v1';
 const DEFAULT_MODEL = 'auto';
 const DEFAULT_CHAT_RETENTION_DAYS = 0;
+const IDE_EXEC_TOKEN = process.env.SORA_IDE_EXEC_TOKEN || randomBytes(32).toString('hex');
 
 let defaultProviderInstance = null;
 let activeWorkspaceRoot = process.cwd();
@@ -525,9 +527,7 @@ export async function handleApiRequest(req, res, customProvider) {
   if (req.method === 'GET' && pathname === '/api/settings') {
     const saved = loadSettings();
     // Never expose the full API key — return masked version
-    const maskedKey = saved.apiKey
-      ? saved.apiKey.slice(0, 8) + '•'.repeat(Math.max(0, saved.apiKey.length - 8))
-      : '';
+    const maskedKey = saved.apiKey ? '•'.repeat(saved.apiKey.length) : '';
     jsonResponse(res, 200, {
       ok: true,
       baseUrl: saved.baseUrl || DEFAULT_BASE_URL,
@@ -715,9 +715,15 @@ export async function handleApiRequest(req, res, customProvider) {
     }
 
     const abortController = new AbortController();
-    req.on('close', () => {
-      abortController.abort();
-    });
+    const abortIfClientDisconnected = () => {
+      if (!res.writableEnded && !abortController.signal.aborted) {
+        abortController.abort(new Error('Client disconnected.'));
+      }
+    };
+    if (typeof res.on === 'function') {
+      res.on('close', abortIfClientDisconnected);
+      res.on('error', abortIfClientDisconnected);
+    }
 
     if (stream) {
       res.writeHead(200, {
@@ -742,21 +748,32 @@ export async function handleApiRequest(req, res, customProvider) {
       }
 
       try {
+      const writeStreamEvent = async (payload) => {
+        if (res.destroyed || res.writableEnded || abortController.signal.aborted) return;
+        const accepted = res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        if (accepted !== false) return;
+        await new Promise((resolve) => {
+          const cleanup = () => {
+            res.removeListener('drain', onDrain);
+            res.removeListener('close', onClose);
+            res.removeListener('error', onClose);
+          };
+          const onDrain = () => { cleanup(); resolve(); };
+          const onClose = () => { cleanup(); resolve(); };
+          res.once('drain', onDrain);
+          res.once('close', onClose);
+          res.once('error', onClose);
+          if (res.destroyed || res.writableEnded) onClose();
+        });
+      };
+
         await provider.streamChat({
           messages: messagesForModel,
           model,
           temperature,
           signal: abortController.signal,
-          onReasoning: (reasoning) => {
-            if (!res.writableEnded) {
-              res.write(`data: ${JSON.stringify({ reasoning })}\n\n`);
-            }
-          },
-          onToken: (token) => {
-            if (!res.writableEnded) {
-              res.write(`data: ${JSON.stringify({ token })}\n\n`);
-            }
-          },
+          onReasoning: (reasoning) => writeStreamEvent({ reasoning }),
+          onToken: (token) => writeStreamEvent({ token }),
           onDone: () => {
             if (!res.writableEnded) {
               res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
@@ -1006,7 +1023,8 @@ export async function handleApiRequest(req, res, customProvider) {
     }
 
     try {
-      const saved = saveMemory(body);
+      // Ignore caller-provided IDs so a POST cannot overwrite seeded/system memories.
+      const saved = saveMemory({ ...body, id: undefined, source: 'manual' });
       jsonResponse(res, 200, { ok: true, memory: saved });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: String(err.message) });
@@ -1210,11 +1228,16 @@ export async function handleApiRequest(req, res, customProvider) {
     try {
       const body = await parseJsonBody(req);
       const { path: relPath, content } = body;
-      if (!relPath) {
+      if (typeof relPath !== 'string' || !relPath.trim()) {
         jsonResponse(res, 400, { ok: false, error: 'Path is required' });
         return true;
       }
-      const targetFile = resolveSafePath(relPath);
+      if (typeof content !== 'string') {
+        jsonResponse(res, 400, { ok: false, error: 'Content must be a string' });
+        return true;
+      }
+      const requestWorkspaceRoot = activeWorkspaceRoot;
+      const targetFile = resolveSafePath(relPath, requestWorkspaceRoot);
       const parentDir = path.dirname(targetFile);
       if (!fs.existsSync(parentDir)) {
         fs.mkdirSync(parentDir, { recursive: true });
@@ -1236,11 +1259,12 @@ export async function handleApiRequest(req, res, customProvider) {
     try {
       const body = await parseJsonBody(req);
       const { path: relPath, isDir } = body;
-      if (!relPath) {
+      if (typeof relPath !== 'string' || !relPath.trim()) {
         jsonResponse(res, 400, { ok: false, error: 'Path is required' });
         return true;
       }
-      const target = resolveSafePath(relPath);
+      const requestWorkspaceRoot = activeWorkspaceRoot;
+      const target = resolveSafePath(relPath, requestWorkspaceRoot);
       if (isDir) {
         fs.mkdirSync(target, { recursive: true });
       } else {
@@ -1264,12 +1288,13 @@ export async function handleApiRequest(req, res, customProvider) {
     try {
       const body = await parseJsonBody(req);
       const { oldPath, newPath } = body;
-      if (!oldPath || !newPath) {
+      if (typeof oldPath !== 'string' || !oldPath.trim() || typeof newPath !== 'string' || !newPath.trim()) {
         jsonResponse(res, 400, { ok: false, error: 'Both oldPath and newPath are required' });
         return true;
       }
-      const targetOld = resolveSafePath(oldPath);
-      const targetNew = resolveSafePath(newPath);
+      const requestWorkspaceRoot = activeWorkspaceRoot;
+      const targetOld = resolveSafePath(oldPath, requestWorkspaceRoot);
+      const targetNew = resolveSafePath(newPath, requestWorkspaceRoot);
       if (!fs.existsSync(targetOld)) {
         jsonResponse(res, 404, { ok: false, error: 'Source not found: ' + oldPath });
         return true;
@@ -1299,23 +1324,25 @@ export async function handleApiRequest(req, res, customProvider) {
         jsonResponse(res, 400, { ok: false, error: 'Path is required' });
         return true;
       }
+      const requestWorkspaceRoot = activeWorkspaceRoot;
       const trimmed = relPath.trim();
       if (!trimmed || trimmed === '.' || trimmed === '/' || trimmed === '\\') {
         jsonResponse(res, 400, { ok: false, error: 'Cannot delete the active workspace root folder.' });
         return true;
       }
-      const target = resolveSafePath(trimmed);
-      // Essential safeguard: Prevent deleting the active workspace root itself
+      const target = resolveSafePath(trimmed, requestWorkspaceRoot);
+      // Protect the workspace captured for this request, even if another request
+      // switches the global active workspace while this delete is in flight.
       if (
-        path.resolve(target) === path.resolve(activeWorkspaceRoot) ||
-        !path.relative(activeWorkspaceRoot, target) ||
-        path.relative(activeWorkspaceRoot, target) === '.'
+        path.resolve(target) === path.resolve(requestWorkspaceRoot) ||
+        !path.relative(requestWorkspaceRoot, target) ||
+        path.relative(requestWorkspaceRoot, target) === '.'
       ) {
         jsonResponse(res, 400, { ok: false, error: 'Cannot delete the active workspace root folder.' });
         return true;
       }
       // Essential safeguard: Protect .git metadata repository folder
-      const relNorm = path.relative(activeWorkspaceRoot, target).replace(/\\/g, '/');
+      const relNorm = path.relative(requestWorkspaceRoot, target).replace(/\\/g, '/');
       if (relNorm === '.git' || relNorm.startsWith('.git/')) {
         jsonResponse(res, 403, { ok: false, error: 'Cannot delete .git repository directory.' });
         return true;
@@ -1330,16 +1357,36 @@ export async function handleApiRequest(req, res, customProvider) {
     return true;
   }
 
-  // POST /api/ide/exec
+  // A same-origin browser can obtain the per-process capability used by the IDE terminal.
+  if (req.method === 'GET' && pathname === '/api/ide/execution-token') {
+    if (!origin || !isAllowedOrigin(origin) || req.headers['x-sora-token-request'] !== '1') {
+      jsonResponse(res, 403, { ok: false, error: 'Forbidden: execution token requires a trusted local Origin.' });
+      return true;
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    jsonResponse(res, 200, { ok: true, token: IDE_EXEC_TOKEN });
+    return true;
+  }
+
+  // POST /api/ide/exec — shell access requires both a trusted Origin and capability token.
   if (req.method === 'POST' && pathname === '/api/ide/exec') {
+    const suppliedToken = req.headers['x-sora-execution-token'];
+    const tokenMatches = typeof suppliedToken === 'string' &&
+      suppliedToken.length === IDE_EXEC_TOKEN.length &&
+      timingSafeEqual(Buffer.from(suppliedToken), Buffer.from(IDE_EXEC_TOKEN));
+    if (!origin || !isAllowedOrigin(origin) || !tokenMatches) {
+      jsonResponse(res, 403, { ok: false, error: 'Forbidden: terminal execution requires a trusted local Origin.' });
+      return true;
+    }
     try {
       const body = await parseJsonBody(req);
       const { command, cwd: customCwd } = body;
-      if (!command) {
-        jsonResponse(res, 400, { ok: false, error: 'Command is required' });
+      if (typeof command !== 'string' || !command.trim()) {
+        jsonResponse(res, 400, { ok: false, error: 'Command must be a non-empty string' });
         return true;
       }
-      const runCwd = customCwd ? resolveSafePath(customCwd) : activeWorkspaceRoot;
+      const requestWorkspaceRoot = activeWorkspaceRoot;
+      const runCwd = customCwd ? resolveSafePath(customCwd, requestWorkspaceRoot) : requestWorkspaceRoot;
 
       // Essential safeguard: Block catastrophic disk/root wiping operations
       const lowerCmd = command.toLowerCase().trim();
@@ -1369,8 +1416,8 @@ export async function handleApiRequest(req, res, customProvider) {
           shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
         },
         (error, stdout, stderr) => {
-          jsonResponse(res, 200, {
-            ok: true,
+          jsonResponse(res, error ? 400 : 200, {
+            ok: !error,
             stdout: stdout || '',
             stderr: stderr || (error ? error.message : ''),
             // error.code can be a string (signal name) or number on Windows — normalise to number

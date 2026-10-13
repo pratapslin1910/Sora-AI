@@ -71,7 +71,7 @@ async function getEmbedding(text, baseUrl, apiKey) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ model: 'text-embedding-3-small', input: text.slice(0, 512) }),
+      body: JSON.stringify({ model: 'text-embedding-3-small', input: text.slice(0, 512), dimensions: EMBED_DIM }),
       signal: controller.signal,
     });
     clearTimeout(timer);
@@ -81,11 +81,11 @@ async function getEmbedding(text, baseUrl, apiKey) {
     const raw = data?.data?.[0]?.embedding;
     if (!Array.isArray(raw)) throw new Error('No embedding in response');
 
-    // Resize to EMBED_DIM: truncate or zero-pad
-    if (raw.length === EMBED_DIM) return raw;
-    const sized = new Array(EMBED_DIM).fill(0);
-    for (let i = 0; i < Math.min(raw.length, EMBED_DIM); i++) sized[i] = raw[i];
-    return sized;
+    // Truncating a 1536d vector produces meaningless similarity against 384d vectors.
+    if (raw.length !== EMBED_DIM || !raw.every((value) => Number.isFinite(value))) {
+      throw new Error(`Embedding dimension mismatch: expected ${EMBED_DIM}, got ${raw.length}.`);
+    }
+    return raw;
   } catch {
     // FreeLLMAPI may not have embeddings — fall back gracefully
     return bowVector(text);
@@ -95,35 +95,44 @@ async function getEmbedding(text, baseUrl, apiKey) {
 /** Singleton DB connection */
 let _db = null;
 let _table = null;
+let _tablePromise = null;
 
 async function getTable(baseUrl, apiKey) {
   if (_table) return _table;
+  if (_tablePromise) return _tablePromise;
 
-  _db = await connect(DB_DIR);
-  const existingNames = await _db.tableNames();
+  _tablePromise = (async () => {
+    _db = await connect(DB_DIR);
+    const existingNames = await _db.tableNames();
 
-  if (existingNames.includes(TABLE_NAME)) {
-    _table = await _db.openTable(TABLE_NAME);
-  } else {
-    // Create table with a seed record so schema is established
-    const seedVec = await getEmbedding('Sora trading assistant initial chat', baseUrl, apiKey);
-    const seedId = crypto.randomUUID();
-    _table = await _db.createTable(TABLE_NAME, [
-      {
-        id: seedId,
-        title: 'Welcome to Sora',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        messages: JSON.stringify([
-          { role: 'assistant', content: 'Hello! I am Sora. How can I help you with your trading today?' },
-        ]),
-        summary: 'Welcome to Sora trading assistant',
-        vector: seedVec,
-      },
-    ]);
+    if (existingNames.includes(TABLE_NAME)) {
+      _table = await _db.openTable(TABLE_NAME);
+    } else {
+      // Create table with a seed record so schema is established.
+      const seedVec = await getEmbedding('Sora trading assistant initial chat', baseUrl, apiKey);
+      const seedId = crypto.randomUUID();
+      _table = await _db.createTable(TABLE_NAME, [
+        {
+          id: seedId,
+          title: 'Welcome to Sora',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          messages: JSON.stringify([
+            { role: 'assistant', content: 'Hello! I am Sora. How can I help you with your trading today?' },
+          ]),
+          summary: 'Welcome to Sora trading assistant',
+          vector: seedVec,
+        },
+      ]);
+    }
+    return _table;
+  })();
+
+  try {
+    return await _tablePromise;
+  } finally {
+    _tablePromise = null;
   }
-
-  return _table;
 }
 
 /** ------------------------------------------------------------------
@@ -384,7 +393,8 @@ export async function searchChatExcerpts(
 
           // Extract code snippet if present in assistant response
           let codeSnippet = undefined;
-          const codeMatch = (nextMsg?.content || '').match(/```[a-z0-9_-]*\n([\s\S]*?)```/i);
+          const nextAssistantText = extractText(nextMsg?.content);
+          const codeMatch = nextAssistantText.match(/```[a-z0-9_-]*\n([\s\S]*?)```/i);
           if (codeMatch && codeMatch[0]) {
             codeSnippet = codeMatch[0];
           }
@@ -393,8 +403,8 @@ export async function searchChatExcerpts(
             chatId: chat.id,
             chatTitle: chat.title,
             date: chat.updated_at || chat.created_at,
-            userQuery: msg.content || '',
-            assistantExcerpt: nextMsg?.content || '',
+            userQuery: extractText(msg.content),
+            assistantExcerpt: extractText(nextMsg?.content),
             codeSnippet,
             score: bestTurnScore,
           };
