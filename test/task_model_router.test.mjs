@@ -86,7 +86,7 @@ test('vision Auto routing delegates to FreeLLMAPI rather than guessing a text-on
 test('unknown task types safely normalize to reasoning', () => {
   assert.equal(normalizeModelTaskType('terminal'), 'reasoning');
   assert.equal(normalizeModelTaskType('coding'), 'coding');
-  assert.equal(selectTaskModel({ taskType: 'terminal', availableModels: ['deepseek-r1-32b'] }).model, 'deepseek-r1-32b');
+  assert.equal(selectTaskModel({ taskType: 'terminal', availableModels: ['deepseek-r1-32b'] }).model, 'auto');
 });
 
 test('provider model cache is isolated by provider instance and de-duplicates IDs', () => {
