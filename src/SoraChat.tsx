@@ -2365,7 +2365,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
           </div>
 
           {settingsTab === 'extensions' ? (
-            <ExtensionsManagerView />
+            <ExtensionsManagerView permissionAllowance={permissionAllowance} />
           ) : (
           <div className="space-y-4 text-xs">
             {/* Base URL */}

@@ -19,8 +19,15 @@ import CloseIcon from '@mui/icons-material/Close';
 import CircularProgress from '@mui/material/CircularProgress';
 import Tooltip from '@mui/material/Tooltip';
 
-export const ExtensionsManagerView: React.FC = () => {
+interface ExtensionsManagerViewProps {
+  permissionAllowance?: 'full_access' | 'sandbox' | 'strict';
+}
+
+export const ExtensionsManagerView: React.FC<ExtensionsManagerViewProps> = ({ permissionAllowance = 'full_access' }) => {
   const [extensions, setExtensions] = useState<InstalledExtension[]>([]);
+  const [draftExtensions, setDraftExtensions] = useState<InstalledExtension[]>([]);
+  const [showApplyDialog, setShowApplyDialog] = useState<boolean>(false);
+  const [isApplyingChanges, setIsApplyingChanges] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -39,6 +46,7 @@ export const ExtensionsManagerView: React.FC = () => {
     try {
       const data = await fetchExtensions();
       setExtensions(data);
+      setDraftExtensions(data);
     } catch (err: any) {
       setErrorMsg(err?.message || 'Failed to load extensions');
     } finally {
@@ -60,22 +68,11 @@ export const ExtensionsManagerView: React.FC = () => {
     }
   };
 
-  const handleToggle = async (ext: InstalledExtension) => {
-    const nextState = !ext.enabled;
-    setActiveActionId(ext.id);
-    try {
-      const res = await toggleExtension(ext.id, nextState);
-      if (res.ok) {
-        showNotification(res.message || `Extension "${ext.name}" ${nextState ? 'enabled' : 'disabled'}.`);
-        await loadData();
-      } else {
-        showNotification(res.error || 'Failed to update extension state.', true);
-      }
-    } catch (err: any) {
-      showNotification(err.message, true);
-    } finally {
-      setActiveActionId(null);
-    }
+  const handleToggle = (ext: InstalledExtension) => {
+    if (isApplyingChanges) return;
+    setDraftExtensions((previous) => previous.map((item) =>
+      item.id === ext.id ? { ...item, enabled: !item.enabled } : item
+    ));
   };
 
   const handleReload = async (id: string) => {
@@ -138,30 +135,91 @@ export const ExtensionsManagerView: React.FC = () => {
     }
   };
 
-  const handleTogglePermission = async (ext: InstalledExtension, perm: string, granted: boolean) => {
-    const updated = { ...ext.permissionsGranted, [perm]: granted };
-    try {
-      const res = await updateExtensionConfig(ext.id, { permissions: updated });
-      if (res.ok) {
-        showNotification(`Permission "${perm}" ${granted ? 'granted' : 'revoked'}.`);
-        await loadData();
-      } else {
-        showNotification(res.error || 'Failed to update permission.', true);
-      }
-    } catch (err: any) {
-      showNotification(err.message, true);
-    }
+  const handleTogglePermission = (ext: InstalledExtension, perm: string, granted: boolean) => {
+    if (isApplyingChanges) return;
+    setDraftExtensions((previous) => previous.map((item) =>
+      item.id === ext.id
+        ? { ...item, permissionsGranted: { ...item.permissionsGranted, [perm]: granted } }
+        : item
+    ));
   };
 
-  const handleConfigChange = async (ext: InstalledExtension, key: string, value: any) => {
-    const updated = { ...ext.currentConfiguration, [key]: value };
+  const handleConfigChange = (ext: InstalledExtension, key: string, value: any) => {
+    if (isApplyingChanges) return;
+    setDraftExtensions((previous) => previous.map((item) =>
+      item.id === ext.id
+        ? { ...item, currentConfiguration: { ...item.currentConfiguration, [key]: value } }
+        : item
+    ));
+  };
+
+  const hasPendingChanges = draftExtensions.some((draft) => {
+    const saved = extensions.find((item) => item.id === draft.id);
+    if (!saved) return false;
+    return draft.enabled !== saved.enabled ||
+      JSON.stringify(draft.permissionsGranted || {}) !== JSON.stringify(saved.permissionsGranted || {}) ||
+      JSON.stringify(draft.currentConfiguration || {}) !== JSON.stringify(saved.currentConfiguration || {});
+  });
+
+  const pendingChangeCount = draftExtensions.reduce((count, draft) => {
+    const saved = extensions.find((item) => item.id === draft.id);
+    if (!saved) return count;
+    const changed = draft.enabled !== saved.enabled ||
+      JSON.stringify(draft.permissionsGranted || {}) !== JSON.stringify(saved.permissionsGranted || {}) ||
+      JSON.stringify(draft.currentConfiguration || {}) !== JSON.stringify(saved.currentConfiguration || {});
+    return count + (changed ? 1 : 0);
+  }, 0);
+
+  const handleApplyChanges = async () => {
+    setIsApplyingChanges(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    const failures: string[] = [];
+    let appliedCount = 0;
     try {
-      const res = await updateExtensionConfig(ext.id, { config: updated });
-      if (res.ok) {
-        await loadData();
+      for (const draft of draftExtensions) {
+        const saved = extensions.find((item) => item.id === draft.id);
+        if (!saved) continue;
+        const permissionsChanged =
+          JSON.stringify(draft.permissionsGranted || {}) !== JSON.stringify(saved.permissionsGranted || {});
+        const configChanged =
+          JSON.stringify(draft.currentConfiguration || {}) !== JSON.stringify(saved.currentConfiguration || {});
+        const enabledChanged = draft.enabled !== saved.enabled;
+
+        try {
+          if (permissionsChanged || configChanged) {
+            const configResult = await updateExtensionConfig(draft.id, {
+              ...(permissionsChanged ? { permissions: draft.permissionsGranted || {} } : {}),
+              ...(configChanged ? { config: draft.currentConfiguration || {} } : {}),
+            });
+            if (!configResult.ok) {
+              failures.push(`${draft.name}: ${configResult.error || 'could not save permissions/configuration'}`);
+              continue;
+            }
+          }
+
+          if (enabledChanged) {
+            const toggleResult = await toggleExtension(draft.id, draft.enabled);
+            if (!toggleResult.ok) {
+              failures.push(`${draft.name}: ${toggleResult.error || 'could not change extension state'}`);
+              continue;
+            }
+          }
+          if (permissionsChanged || configChanged || enabledChanged) appliedCount++;
+        } catch (err: any) {
+          failures.push(`${draft.name}: ${err?.message || 'change failed'}`);
+        }
       }
-    } catch (err: any) {
-      showNotification(err.message, true);
+
+      await loadData();
+      setShowApplyDialog(false);
+      if (failures.length) {
+        showNotification(`Applied ${appliedCount} extension change(s); ${failures.length} failed: ${failures.slice(0, 3).join('; ')}`, true);
+      } else {
+        showNotification(appliedCount ? `Applied changes to ${appliedCount} extension(s).` : 'No changes to apply.');
+      }
+    } finally {
+      setIsApplyingChanges(false);
     }
   };
 
@@ -176,7 +234,7 @@ export const ExtensionsManagerView: React.FC = () => {
               Extensions & Modular Tools
             </h4>
             <span className="px-2 py-0.5 rounded-full text-[10px] bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 font-mono">
-              {extensions.filter((e) => e.enabled).length} active / {extensions.length} installed
+              {draftExtensions.filter((e) => e.enabled).length} active / {draftExtensions.length} installed
             </span>
           </div>
           <p className="text-[11px] text-slate-400 mt-0.5">
@@ -184,7 +242,24 @@ export const ExtensionsManagerView: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <button
+            type="button"
+            onClick={() => setShowApplyDialog(true)}
+            disabled={!hasPendingChanges || isApplyingChanges}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 font-medium text-xs transition-colors disabled:opacity-40"
+          >
+            <CheckIcon sx={{ fontSize: 15 }} />
+            Apply changes{pendingChangeCount ? ` (${pendingChangeCount})` : ''}
+          </button>
+          <button
+            type="button"
+            onClick={() => setDraftExtensions(extensions)}
+            disabled={!hasPendingChanges || isApplyingChanges}
+            className="px-2.5 py-1.5 rounded-xl border border-white/10 hover:bg-white/[0.06] text-slate-400 text-xs disabled:opacity-40"
+          >
+            Discard
+          </button>
           <button
             type="button"
             onClick={() => setShowImportBar((prev) => !prev)}
@@ -218,6 +293,37 @@ export const ExtensionsManagerView: React.FC = () => {
           <CheckIcon sx={{ fontSize: 16 }} />
           <span className="flex-1">{successMsg}</span>
           <button onClick={() => setSuccessMsg(null)} className="text-slate-400 hover:text-white">✕</button>
+        </div>
+      )}
+
+      {/* One confirmation dialog applies all staged extension, permission and config changes. */}
+      {showApplyDialog && (
+        <div className="fixed inset-0 z-[120] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4" role="presentation">
+          <div role="dialog" aria-modal="true" aria-labelledby="extension-apply-title" className="w-full max-w-md rounded-2xl border border-white/10 bg-[#101014] shadow-2xl p-5 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
+                <SecurityIcon sx={{ fontSize: 18 }} className="text-emerald-300" />
+              </div>
+              <div className="flex-1">
+                <h3 id="extension-apply-title" className="text-sm font-semibold text-white">Apply extension changes?</h3>
+                <p className="mt-1 text-xs text-slate-400">
+                  This will update permissions/configuration and enable or disable the selected extensions in one confirmation.
+                  The active Permission Allowance policy will still govern tool execution.
+                </p>
+              </div>
+            </div>
+            <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs text-slate-300">
+              <div><strong className="text-white">{pendingChangeCount}</strong> extension(s) have pending changes.</div>
+              <div className="mt-1 text-slate-500">Current execution policy: <span className="text-cyan-300 font-semibold">{permissionAllowance === 'strict' ? 'Strict' : permissionAllowance === 'sandbox' ? 'Sandbox' : 'Full Access'}</span></div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button type="button" disabled={isApplyingChanges} onClick={() => setShowApplyDialog(false)} className="px-3 py-2 rounded-lg border border-white/10 text-slate-300 hover:bg-white/[0.06] text-xs disabled:opacity-50">Cancel</button>
+              <button type="button" disabled={isApplyingChanges || !hasPendingChanges} onClick={() => void handleApplyChanges()} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs disabled:opacity-50 flex items-center gap-2">
+                {isApplyingChanges && <CircularProgress size={12} sx={{ color: 'white' }} />}
+                {isApplyingChanges ? 'Applying…' : 'Confirm and apply'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -264,7 +370,7 @@ export const ExtensionsManagerView: React.FC = () => {
       )}
 
       {/* Extension List */}
-      {!loading && extensions.length === 0 && (
+      {!loading && draftExtensions.length === 0 && (
         <div className="py-8 text-center text-slate-500 border border-dashed border-white/10 rounded-xl">
           <ExtensionIcon sx={{ fontSize: 32 }} className="text-slate-600 mb-2" />
           <p className="font-medium text-slate-400">No extensions installed.</p>
@@ -272,9 +378,9 @@ export const ExtensionsManagerView: React.FC = () => {
         </div>
       )}
 
-      {!loading && extensions.length > 0 && (
+      {!loading && draftExtensions.length > 0 && (
         <div className="space-y-3">
-          {extensions.map((ext) => {
+          {draftExtensions.map((ext) => {
             const isBusy = activeActionId === ext.id;
             const isExpanded = expandedId === ext.id;
 
@@ -391,7 +497,7 @@ export const ExtensionsManagerView: React.FC = () => {
                       <input
                         type="checkbox"
                         checked={ext.enabled}
-                        disabled={isBusy}
+                        disabled={isBusy || isApplyingChanges}
                         onChange={() => handleToggle(ext)}
                         className="sr-only peer"
                       />
@@ -439,6 +545,7 @@ export const ExtensionsManagerView: React.FC = () => {
                               <button
                                 key={perm}
                                 type="button"
+                                disabled={isApplyingChanges}
                                 onClick={() => handleTogglePermission(ext, perm, !isGranted)}
                                 className={`px-3 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors ${
                                   isGranted
