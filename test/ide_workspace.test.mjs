@@ -174,6 +174,65 @@ describe('IDE & Workspace Endpoints Tests', () => {
     assert.equal(execData.exitCode, 0);
   });
 
+  it('keeps npm run dev alive, reattaches to it, exposes logs, and can stop it', async () => {
+    fs.writeFileSync(path.join(testDir, 'package.json'), JSON.stringify({
+      name: 'sora-persistent-session-test',
+      private: true,
+      scripts: {
+        dev: 'node -e "setInterval(() => console.log(\\'persistent-session-tick\\'), 1000)"',
+      },
+    }, null, 2));
+
+    const headers = await authorizedExecHeaders();
+    const startRes = await fetch(`${baseUrl}/api/ide/exec`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ command: 'npm run dev' }),
+    });
+    assert.equal(startRes.status, 200);
+    const started = await startRes.json();
+    assert.equal(started.ok, true);
+    assert.equal(started.running, true);
+    assert.ok(started.processId);
+
+    const duplicateRes = await fetch(`${baseUrl}/api/ide/exec`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ command: 'npm run dev' }),
+    });
+    assert.equal(duplicateRes.status, 200);
+    const duplicate = await duplicateRes.json();
+    assert.equal(duplicate.processId, started.processId);
+    assert.equal(duplicate.alreadyRunning, true);
+
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const statusRes = await fetch(`${baseUrl}/api/ide/session/${started.processId}`, {
+      headers: { 'X-Sora-Execution-Token': headers['X-Sora-Execution-Token'] },
+    });
+    assert.equal(statusRes.status, 200);
+    const status = await statusRes.json();
+    assert.equal(status.running, true);
+    assert.match(status.stdout, /persistent-session-tick/);
+
+    const stopRes = await fetch(`${baseUrl}/api/ide/session/${started.processId}/stop`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({}),
+    });
+    assert.equal(stopRes.status, 200);
+    assert.equal((await stopRes.json()).ok, true);
+
+    let finalStatus = status;
+    for (let attempt = 0; attempt < 20 && finalStatus.running; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const poll = await fetch(`${baseUrl}/api/ide/session/${started.processId}`, {
+        headers: { 'X-Sora-Execution-Token': headers['X-Sora-Execution-Token'] },
+      });
+      finalStatus = await poll.json();
+    }
+    assert.equal(finalStatus.running, false);
+  });
+
   it('GET /api/ide/search searches files in active workspace', async () => {
     // Write sample searchable file
     await fetch(`${baseUrl}/api/ide/write`, {
