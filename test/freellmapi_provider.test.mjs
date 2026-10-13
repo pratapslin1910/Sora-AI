@@ -66,7 +66,7 @@ describe('FreeLLMAPIProvider Unit & Mock Tests', () => {
             }
             if (parsed.model === 'actual-model-test') {
               res.write('data: {"model":"resolved-model-v2","choices":[{"delta":{"content":"Model identified"}}]}\n\n');
-              res.write('data: [DONE]\\n\\n');
+              res.write('data: [DONE]\n\n');
               res.end();
               return;
             }
