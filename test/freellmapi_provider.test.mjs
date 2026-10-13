@@ -226,7 +226,7 @@ describe('API Router Integration Tests', () => {
       const url = new URL(req.url, `http://localhost:${mockPort}`);
       if (url.pathname === '/v1/models') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ data: [{ id: 'auto' }] }));
+        res.end(JSON.stringify({ data: [{ id: 'auto' }, { id: 'test-ready-model', execution_status: 'ready' }] }));
         return;
       }
       if (url.pathname === '/v1/chat/completions') {
