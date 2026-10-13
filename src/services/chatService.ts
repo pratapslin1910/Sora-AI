@@ -127,6 +127,8 @@ export interface StreamChatOptions {
   signal?: AbortSignal;
   recallMemory?: boolean;
   currentChatId?: string | null;
+  onModel?: (model: string) => void;
+  onRoutedVia?: (route: string) => void;
   onRecall?: (recalled: RecalledContextPayload) => void;
   onMemorySaved?: (memories: MemoryItem[]) => void;
   onReasoning?: (thought: string) => void;
@@ -144,6 +146,8 @@ export async function streamChatMessage(
     signal,
     recallMemory = true,
     currentChatId = null,
+    onModel,
+    onRoutedVia,
     onRecall,
     onMemorySaved,
     onReasoning,
@@ -206,6 +210,12 @@ export async function streamChatMessage(
           if (payload.error) {
             onError(payload.error);
             return;
+          }
+          if (typeof payload.selectedModel === 'string' && payload.selectedModel) {
+            onModel?.(payload.selectedModel);
+          }
+          if (typeof payload.routedVia === 'string' && payload.routedVia) {
+            onRoutedVia?.(payload.routedVia);
           }
           if (payload.recalled && onRecall) {
             onRecall(payload.recalled);
