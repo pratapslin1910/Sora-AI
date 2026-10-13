@@ -499,6 +499,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
   const [settingsBaseUrl, setSettingsBaseUrl] = useState('');
   const [settingsApiKey, setSettingsApiKey] = useState('');
   const [settingsModel, setSettingsModel] = useState('auto');
+  const settingsModelRef = useRef('auto');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoadError, setModelsLoadError] = useState('');
@@ -517,11 +518,16 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
     try {
       const models = await fetchAvailableModels();
       setAvailableModels(models);
-      setModelsLoadError(models.length ? '' : 'No ready models were returned. Check that FreeLLMAPI is running and has enabled, usable model keys.');
-      setSettingsModel((current) => {
-        if (!current || current.toLowerCase() === 'auto' || models.includes(current)) return current || 'auto';
-        return 'auto';
-      });
+      const currentSelection = settingsModelRef.current;
+      if (currentSelection && currentSelection.toLowerCase() !== 'auto' && !models.includes(currentSelection)) {
+        settingsModelRef.current = 'auto';
+        setSettingsModel('auto');
+        setModelsLoadError(models.length
+          ? `Saved model "${currentSelection}" is no longer ready. Auto is selected in this form; save settings to apply it.`
+          : `Saved model "${currentSelection}" could not be verified. Auto is selected in this form; refresh models and save settings.`);
+      } else {
+        setModelsLoadError(models.length ? '' : 'No ready models were returned. Check that FreeLLMAPI is running and has enabled, usable model keys.');
+      }
     } catch {
       setAvailableModels([]);
       setModelsLoadError('Could not verify the live FreeLLMAPI model list.');
@@ -536,7 +542,8 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
       setSettingsBaseUrl(s.baseUrl || '');
       setSettingsApiKey(s.apiKeyMasked || '');
       setSettingsApiKeySet(Boolean(s.apiKeySet));
-      setSettingsModel(s.model || 'auto');
+      settingsModelRef.current = s.model || 'auto';
+      setSettingsModel(settingsModelRef.current);
       setAutoDeleteChats(Boolean(s.autoDeleteChats));
       setChatRetentionDays(Math.max(1, Number(s.chatRetentionDays) || 30));
       setPermissionAllowance(s.permissionAllowance || 'full_access');
@@ -2396,7 +2403,11 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
               </div>
               <select
                 value={settingsModel || 'auto'}
-                onChange={(e) => setSettingsModel(e.target.value)}
+                onChange={(e) => {
+                  settingsModelRef.current = e.target.value;
+                  setSettingsModel(e.target.value);
+                  setModelsLoadError(availableModels.length ? '' : modelsLoadError);
+                }}
                 className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white text-xs focus:outline-none focus:border-cyan-500/60 font-mono"
               >
                 <option value="auto">Auto — random ready model</option>
