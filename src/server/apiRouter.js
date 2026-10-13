@@ -768,10 +768,22 @@ export async function handleApiRequest(req, res, customProvider) {
     const permissionAllowance = settings.permissionAllowance || 'full_access';
     extensionManager.permissionManager.setAllowanceMode(permissionAllowance);
 
-    // If clientSystemPrompt didn't already supply tools prompt, inject all active extension tools
+    // IDE Copilot and Sora Assistant are separate agents. Only the Assistant receives
+    // the app-internal hand-off tool; Copilot gets workspace tools from its own prompt.
+    const isIdeCopilotRequest = /IDE COPILOT SECURITY MODE:/i.test(clientSystemPrompt);
+    const assistantDelegationToolPrompt = isIdeCopilotRequest ? '' : [
+      'SORA APP TASK-HANDOFF TOOL:',
+      'Use delegate_to_copilot only when the user asks for a code change, debugging, testing, or implementation that belongs in the currently opened IDE workspace.',
+      'This tool hands a specific task to the separate IDE Copilot. It does not itself edit files.',
+      'Tool call format:',
+      '<tool_call>',
+      '{"tool":"delegate_to_copilot","args":{"task":"A clear, actionable workspace coding task, including acceptance criteria"}}',
+      '</tool_call>',
+      'Do not use this tool for web research, general questions, or tasks outside the code workspace. If the user only asked for advice, answer directly.'
+    ].join('\n');
     const toolsPrompt = clientSystemPrompt.includes('AVAILABLE TOOLS:')
       ? ''
-      : extensionManager.toolRegistry.formatToolsForPrompt();
+      : extensionManager.toolRegistry.formatToolsForPrompt() + (assistantDelegationToolPrompt ? '\n\n' + assistantDelegationToolPrompt : '');
 
     // Keep explicit saved user instructions/preferences available on every request,
     // even when they are not semantically close to the latest question.
