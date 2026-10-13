@@ -259,6 +259,7 @@ export class FreeLLMAPIProvider {
         content: assistantMessage.content || '',
         reasoning,
         model: data?.model || chosenModel,
+        routedVia: res.headers.get('x-routed-via') || null,
         usage: data?.usage,
       };
     } catch (err) {
@@ -288,6 +289,7 @@ export class FreeLLMAPIProvider {
     onReasoning = () => {},
     onDone = () => {},
     onError = () => {},
+    onRoutedVia = () => {},
   } = {}) {
     this.validateMessages(messages);
     const chosenModel = model || this.defaultModel;
