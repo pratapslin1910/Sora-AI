@@ -217,9 +217,10 @@ export interface SoraChatProps {
   onClearInitialPrompt?: () => void;
   settingsOpen?: boolean;
   onSettingsOpenChange?: (open: boolean) => void;
+  onDelegateToCopilot?: (task: string) => void;
 }
 
-const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, onSettingsOpenChange = () => {} }: SoraChatProps = {}) => {
+const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, onSettingsOpenChange = () => {}, onDelegateToCopilot }: SoraChatProps = {}) => {
   const [messages, setMessages] = useState<MessageWithThinking[]>([]);
   const [input, setInput] = useState('');
 
@@ -1168,27 +1169,40 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
 
               let toolRes: any;
               try {
-                toolRes = await executeExtensionTool(toolCall.tool, toolCall.args, {
-                  signal: abortController.signal,
-                });
-                if (toolRes?.requiresConfirmation && toolRes?.confirmationToken) {
-                  const argsPreview = JSON.stringify(toolCall.args, null, 2).slice(0, 1600);
-                  const approved = typeof window !== 'undefined' && window.confirm(
-                    `Strict Mode confirmation\\n\\nSora wants to run "${toolCall.tool}" with these arguments:\\n\\n${argsPreview}\\n\\nAllow this action?`
-                  );
-                  if (approved && !abortController.signal.aborted) {
-                    toolRes = await executeExtensionTool(toolCall.tool, toolCall.args, {
-                      signal: abortController.signal,
-                      confirmationToken: toolRes.confirmationToken,
-                    });
+                if (toolCall.tool === 'delegate_to_copilot') {
+                  const delegatedTask = typeof toolCall.args?.task === 'string' ? toolCall.args.task.trim() : '';
+                  if (!delegatedTask) {
+                    toolRes = { ok: false, error: 'A non-empty Copilot task is required.' };
+                  } else if (!onDelegateToCopilot) {
+                    toolRes = { ok: false, error: 'IDE Copilot hand-off is not available in this app session.' };
+                  } else if (abortController.signal.aborted) {
+                    toolRes = { ok: false, error: 'The hand-off was cancelled.' };
                   } else {
-                    toolRes = { ok: false, error: 'The user declined the confirmation.' };
+                    onDelegateToCopilot(delegatedTask);
+                    toolRes = { ok: true, data: { delegated: true, target: 'IDE Copilot', task: delegatedTask } };
+                  }
+                } else {
+                  toolRes = await executeExtensionTool(toolCall.tool, toolCall.args, {
+                    signal: abortController.signal,
+                  });
+                  if (toolRes?.requiresConfirmation && toolRes?.confirmationToken) {
+                    const argsPreview = JSON.stringify(toolCall.args, null, 2).slice(0, 1600);
+                    const approved = typeof window !== 'undefined' && window.confirm(
+                      'Tool confirmation\n\nSora wants to run "' + toolCall.tool + '" with these arguments:\n\n' + argsPreview + '\n\nAllow this action?'
+                    );
+                    if (approved && !abortController.signal.aborted) {
+                      toolRes = await executeExtensionTool(toolCall.tool, toolCall.args, {
+                        signal: abortController.signal,
+                        confirmationToken: toolRes.confirmationToken,
+                      });
+                    } else {
+                      toolRes = { ok: false, error: 'The user declined the confirmation.' };
+                    }
                   }
                 }
               } catch (err: any) {
                 toolRes = { ok: false, error: err?.message || 'Tool execution failed' };
               }
-
               // A running tool may not support cancellation, but never start the next
               // tool or a follow-up generation after the user has stopped this turn.
               if (abortController.signal.aborted) return;
@@ -1604,6 +1618,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
         </div>
 
         {/* Gateway model and connection status; Settings is in the Profile menu. */}
+        <div className="p-2.5 border-t border-[#222222] bg-[#0c0c0c] shrink-0 space-y-2">
           <div className="flex items-center justify-between px-1 text-[10px] font-mono-terminal text-[#71717A]">
             <div className="flex items-center gap-1.5">
               <span className={`w-1.5 h-1.5 rounded-full ${gatewayStatus.ok ? 'bg-[#00D99A]' : 'bg-[#FF981F]'}`} />
