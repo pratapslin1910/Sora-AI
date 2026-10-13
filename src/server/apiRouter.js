@@ -609,7 +609,8 @@ export async function handleApiRequest(req, res, customProvider) {
     // Resolve a verified concrete model once for this turn. Vision requests remain
     // on upstream Auto so the gateway can choose a vision-capable provider.
     const settings = loadSettings();
-    const configuredModel = String(settings.model || provider.defaultModel || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
+    // The real provider is constructed from saved settings; respect an injected provider's own default in tests and custom integrations.
+    const configuredModel = String(provider.defaultModel || settings.model || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
     const requestedModel = typeof model === 'string' && model.trim() ? model.trim() : configuredModel;
     const hasVisionPayload = messages.some((message) =>
       Array.isArray(message?.content) && message.content.some((part) => part?.type === 'image_url')
