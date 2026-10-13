@@ -358,6 +358,21 @@ export function getProvider() {
 
 export function setProvider(provider) {
   defaultProviderInstance = provider;
+  // Refresh the available-model catalogue asynchronously after provider changes.
+  if (provider && typeof provider.getModels === 'function') {
+    provider.getModels()
+      .then((models) => cacheProviderModels(provider, models))
+      .catch(() => {});
+  }
+}
+
+// Pre-warm task-aware routing so the first user prompt usually has the
+// available-model list before model selection starts.
+if (process.env.NODE_ENV !== 'test') {
+  const initialProvider = getProvider();
+  initialProvider.getModels()
+    .then((models) => cacheProviderModels(initialProvider, models))
+    .catch(() => {});
 }
 
 /**
@@ -738,7 +753,7 @@ export async function handleApiRequest(req, res, customProvider) {
       return true;
     }
 
-    const { messages, model, stream = true, temperature, recallMemory = true, currentChatId, taskType = 'reasoning' } = body;
+    const { messages, model: requestedModel, stream = true, temperature, recallMemory = true, currentChatId, taskType = 'reasoning' } = body;
 
     if (!messages || !Array.isArray(messages)) {
       jsonResponse(res, 400, { error: 'Missing or invalid "messages" in request body.' });
@@ -816,6 +831,23 @@ export async function handleApiRequest(req, res, customProvider) {
     const toolsPrompt = clientSystemPrompt.includes('AVAILABLE TOOLS:')
       ? ''
       : extensionManager.toolRegistry.formatToolsForPrompt() + (assistantDelegationToolPrompt ? '\n\n' + assistantDelegationToolPrompt : '');
+
+    // Resolve the model independently per task using the live FreeLLMAPI catalogue.
+    // An explicitly supplied request model wins; otherwise Settings controls Auto
+    // (task-aware) versus Manual (one model for every task).
+    const configuredTaskModels = settings.taskModels && typeof settings.taskModels === 'object' ? settings.taskModels : {};
+    const explicitRequestModel = typeof requestedModel === 'string' && requestedModel.trim() && requestedModel.trim().toLowerCase() !== 'auto';
+    const modelSelection = selectTaskModel({
+      taskType,
+      availableModels: getCachedProviderModels(provider),
+      defaultModel: explicitRequestModel ? requestedModel.trim() : (settings.model || provider.defaultModel || 'auto'),
+      routingMode: explicitRequestModel ? 'manual' : (settings.modelRoutingMode === 'manual' ? 'manual' : 'auto'),
+      taskModels: configuredTaskModels,
+    });
+    const model = modelSelection.model;
+    if (modelSelection.warning) {
+      console.warn('[TaskModelRouter]', modelSelection.warning);
+    }
 
     // Keep explicit saved user instructions/preferences available on every request,
     // even when they are not semantically close to the latest question.
