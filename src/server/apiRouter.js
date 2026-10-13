@@ -890,7 +890,6 @@ export async function handleApiRequest(req, res, customProvider) {
           temperature,
           signal: abortController.signal,
           onModel: (activeModel) => writeStreamEvent({ model: activeModel, task: taskType }),
-          onModel: (activeModel) => writeStreamEvent({ model: activeModel, task: taskType }),
           onReasoning: (reasoning) => writeStreamEvent({ reasoning }),
           onToken: (token) => writeStreamEvent({ token }),
           onDone: () => {
