@@ -265,6 +265,28 @@ describe('FreeLLMAPIProvider Unit & Mock Tests', () => {
     assert.equal(reasoningParts.join(''), 'SECRET_MARKER');
   });
 
+  it('does not report a requested model as active when FreeLLMAPI rejects it', async () => {
+    const provider = new FreeLLMAPIProvider({
+      baseUrl: mockBaseUrl,
+      apiKey: 'valid_key',
+      model: 'trigger-429',
+    });
+    const reportedModels = [];
+    const errors = [];
+
+    await assert.rejects(
+      () => provider.streamChat({
+        messages: [{ role: 'user', content: 'Hi' }],
+        onModel: (model) => reportedModels.push(model),
+        onError: (error) => errors.push(String(error.message || error)),
+      }),
+      /Rate limit exceeded/
+    );
+
+    assert.deepEqual(reportedModels, [], 'An HTTP-rejected request must not mark its requested model as active.');
+    assert.equal(errors.length, 1);
+  });
+
   it('handles 429 rate limit errors cleanly', async () => {
     const provider = new FreeLLMAPIProvider({
       baseUrl: mockBaseUrl,
