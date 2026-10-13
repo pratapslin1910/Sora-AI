@@ -124,6 +124,7 @@ export interface RecalledContextPayload {
 
 export interface StreamChatOptions {
   model?: string;
+  taskType?: 'assistant' | 'coding' | 'research' | 'vision' | 'terminal' | 'other';
   signal?: AbortSignal;
   recallMemory?: boolean;
   currentChatId?: string | null;
@@ -141,6 +142,7 @@ export async function streamChatMessage(
 ): Promise<void> {
   const {
     model,
+    taskType = 'assistant',
     signal,
     recallMemory = true,
     currentChatId = null,
@@ -152,6 +154,16 @@ export async function streamChatMessage(
     onError,
   } = options;
 
+  let lastReportedModel = model || 'auto';
+  const emitModelActivity = (type: 'start' | 'model' | 'done' | 'error', extra: Record<string, unknown> = {}) => {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('sora:model-activity', {
+        detail: { type, model: lastReportedModel, task: taskType, ...extra },
+      }));
+    }
+  };
+  emitModelActivity('start');
+
   try {
     const response = await fetch('/api/chat', {
       method: 'POST',
@@ -159,6 +171,7 @@ export async function streamChatMessage(
       body: JSON.stringify({
         messages,
         model,
+        taskType,
         stream: true,
         recallMemory,
         currentChatId,
@@ -175,12 +188,15 @@ export async function streamChatMessage(
       } catch {
         /* fallback */
       }
+      emitModelActivity('error', { error: msg });
       onError(msg);
       return;
     }
 
     if (!response.body) {
-      onError('No response body received from server.');
+      const error = 'No response body received from server.';
+      emitModelActivity('error', { error });
+      onError(error);
       return;
     }
 
@@ -213,6 +229,10 @@ export async function streamChatMessage(
           if (payload.memorySaved && onMemorySaved) {
             onMemorySaved(payload.memorySaved);
           }
+          if (typeof payload.model === 'string' && payload.model) {
+            lastReportedModel = payload.model;
+            emitModelActivity('model', { model: payload.model, task: payload.task || taskType });
+          }
           if (payload.reasoning && onReasoning) {
             onReasoning(payload.reasoning);
           }
@@ -221,6 +241,7 @@ export async function streamChatMessage(
           }
           if (payload.done && !doneCalled) {
             doneCalled = true;
+            emitModelActivity('done');
             onDone();
             return;
           }
@@ -244,6 +265,10 @@ export async function streamChatMessage(
         if (payload.memorySaved && onMemorySaved) {
           onMemorySaved(payload.memorySaved);
         }
+        if (typeof payload.model === 'string' && payload.model) {
+          lastReportedModel = payload.model;
+          emitModelActivity('model', { model: payload.model, task: payload.task || taskType });
+        }
         if (payload.reasoning && onReasoning) {
           onReasoning(payload.reasoning);
         }
@@ -256,11 +281,17 @@ export async function streamChatMessage(
     }
 
     if (!doneCalled) {
+      emitModelActivity('done');
       onDone();
     }
   } catch (err: any) {
-    if (signal?.aborted) return;
-    onError(err?.message || 'Stream connection failed.');
+    if (signal?.aborted) {
+      emitModelActivity('done');
+      return;
+    }
+    const error = err?.message || 'Stream connection failed.';
+    emitModelActivity('error', { error });
+    onError(error);
   }
 }
 

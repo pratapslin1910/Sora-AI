@@ -306,16 +306,26 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
           }
         }
 
-        // Single execution: onRunTerminalCommand runs in workspaceRoot and mirrors in terminal history
+        // A terminal result is successful only when the backend explicitly confirms it.
+        if (!workspaceRoot) {
+          return { ok: false, error: 'No workspace is open. Open a project folder before running terminal commands.' };
+        }
         const res = await onRunTerminalCommand(command);
+        const hasExitCode = Number.isInteger(res?.exitCode);
+        const success = res?.ok === true && hasExitCode && (res.running === true || res.exitCode === 0);
         return {
-          ok: (res?.exitCode ?? 0) === 0,
+          ok: success,
+          error: success ? undefined : res?.error || res?.stderr || 'Terminal did not confirm successful execution.',
           data: {
             command,
-            exitCode: res?.exitCode ?? 0,
+            exitCode: hasExitCode ? res.exitCode : 1,
             stdout: res?.stdout ? res.stdout.slice(0, 4000) : '',
             stderr: res?.stderr ? res.stderr.slice(0, 2000) : '',
-            cwd: res?.cwd,
+            cwd: res?.cwd || workspaceRoot,
+            running: Boolean(res?.running),
+            processId: res?.processId,
+            alreadyRunning: Boolean(res?.alreadyRunning),
+            message: res?.message,
           },
         };
       }
@@ -486,6 +496,7 @@ When completely finished, provide your final answer with no further tool calls.`
           abortController.signal.addEventListener('abort', settle, { once: true });
           streamChatMessage(internalChat, {
             signal: abortController.signal,
+            taskType: 'coding',
             onToken: (token) => {
               stepResponseText += token;
               // Live update the current assistant message content in the UI

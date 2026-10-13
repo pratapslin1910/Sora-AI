@@ -706,7 +706,7 @@ export async function handleApiRequest(req, res, customProvider) {
       return true;
     }
 
-    const { messages, model, stream = true, temperature, recallMemory = true, currentChatId } = body;
+    const { messages, model, stream = true, temperature, recallMemory = true, currentChatId, taskType = 'assistant' } = body;
 
     if (!messages || !Array.isArray(messages)) {
       jsonResponse(res, 400, { error: 'Missing or invalid "messages" in request body.' });
@@ -888,6 +888,7 @@ export async function handleApiRequest(req, res, customProvider) {
           model,
           temperature,
           signal: abortController.signal,
+          onModel: (activeModel) => writeStreamEvent({ model: activeModel, task: taskType }),
           onReasoning: (reasoning) => writeStreamEvent({ reasoning }),
           onToken: (token) => writeStreamEvent({ token }),
           onDone: () => {
@@ -1509,7 +1510,7 @@ export async function handleApiRequest(req, res, customProvider) {
   }
 
   // A same-origin browser can obtain the per-process capability used by the IDE terminal.
-  if (req.method === 'GET' && pathname === '/api/ide/execution-token') {
+  if (req.method === 'POST' && pathname === '/api/ide/execution-token') {
     if (!origin || !isAllowedOrigin(origin) || req.headers['x-sora-token-request'] !== '1') {
       jsonResponse(res, 403, { ok: false, error: 'Forbidden: execution token requires a trusted local Origin.' });
       return true;
