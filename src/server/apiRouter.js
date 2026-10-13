@@ -785,7 +785,7 @@ export async function handleApiRequest(req, res, customProvider) {
     })).slice(0, 40);
     const userPreferences = savedPreferenceMemories
       .map((memory) => `- [${memory.title || 'Saved instruction'}]: ${memory.content}`)
-      .join('\\n');
+      .join('\n');
 
     const centralizedSystemPrompt = buildSystemPrompt({
       clientSystemPrompt,
