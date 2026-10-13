@@ -24,6 +24,14 @@ test('task model router selects explicit specialist model IDs from the provider 
   assert.notEqual(selectTaskModel({ taskType: 'research', availableModels: models }).model, 'reranker-v2');
 });
 
+test('general assistant tasks prefer a general chat model over coding/reasoning specialists', () => {
+  const result = selectTaskModel({
+    taskType: 'assistant',
+    availableModels: ['chat-general-8b-instruct', 'deepseek-r1-32b', 'qwen2.5-coder-32b-instruct'],
+  });
+  assert.equal(result.model, 'chat-general-8b-instruct');
+});
+
 test('manual mode pins one configured model and ignores specialist candidates', () => {
   const result = selectTaskModel({
     taskType: 'coding',
