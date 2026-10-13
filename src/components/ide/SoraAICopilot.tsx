@@ -159,8 +159,8 @@ export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
     const mode = permissionAllowanceRef.current;
     const fileMutationTools = new Set(['write_file', 'create_item', 'rename_item', 'delete_item']);
     const command = tool === 'run_command' ? String(args.command || '') : '';
-    const packageOrNetworkCommand = /(?:\b(?:npm|pnpm|yarn|bun)\s+(?:install|i|ci|add|update|upgrade|dlx|exec)\b|\bnpx\b|\b(?:pip|pip3)\s+install\b|\bpython(?:3)?\s+-m\s+pip\s+install\b|\b(?:uv\s+add|cargo\s+add|go\s+get)\b|\b(?:curl|wget|invoke-webrequest|iwr|irm)\b)/i.test(command);
-    const launchesExternalTerminal = /(?:^|[;&|]\s*)(?:start(?:-process)?|wt(?:\.exe)?|cmd(?:\.exe)?\s+\/c|powershell(?:\.exe)?\s+-(?:command|c)\b|explorer(?:\.exe)?|wezterm(?:\.exe)?|gnome-terminal)\b/i.test(command);
+    const packageOrNetworkCommand = /(?:\b(?:npm|pnpm|yarn|bun)\s+(?:install|i|ci|add|update|upgrade|dlx|exec)\b|\bnpx\b|\b(?:pip|pip3)\s+install\b|\bpython(?:3)?\s+-m\s+pip\s+install\b|\b(?:uv\s+add|cargo\s+add|go\s+get)\b|\b(?:curl|wget|invoke-webrequest|iwr|irm)\b|\bgit\s+(?:clone|fetch|pull|submodule\s+update)\b)/i.test(command);
+    const launchesExternalTerminal = /(?:^|[;&|]\s*)(?:start(?:-process)?|wt(?:\.exe)?|cmd(?:\.exe)?\s+\/[ck]|powershell(?:\.exe)?\s+-(?:command|c|file|encodedcommand)\b|explorer(?:\.exe)?|wezterm(?:\.exe)?|gnome-terminal)\b/i.test(command);
 
     if (mode === 'sandbox' && tool === 'run_command' && launchesExternalTerminal) {
       return { ok: false, error: 'Sandbox Mode: Copilot can use only the integrated IDE terminal; launching an external terminal or shell is blocked.' };
@@ -689,11 +689,11 @@ When completely finished, provide your final answer with no further tool calls.`
           <div className="flex flex-col">
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-bold text-white tracking-wider">
-                SORA AGENT
+                SORA COPILOT
               </span>
               <span className="flex items-center gap-1 px-1.5 py-0.2 rounded text-[9px] font-mono bg-[#00D99A]/15 text-[#00D99A] border border-[#00D99A]/30">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#00D99A] animate-pulse" />
-                AUTONOMOUS
+                IDE ONLY
               </span>
             </div>
           </div>
