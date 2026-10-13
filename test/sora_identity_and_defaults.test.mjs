@@ -269,6 +269,7 @@ TOOL CALL PROTOCOL:
 
     let sentMessages = null;
     const mockProvider = new FreeLLMAPIProvider();
+    mockProvider.getModels = async () => ['test-model'];
     mockProvider.chat = async ({ messages }) => {
       sentMessages = messages;
       return {
