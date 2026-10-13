@@ -19,44 +19,6 @@ export function normalizeModelTaskType(taskType) {
   return MODEL_TASK_TYPES.includes(taskType) ? taskType : 'reasoning';
 }
 
-function modelSizeScore(id) {
-  const matches = [...id.matchAll(/(?:^|[-_/])(\d+(?:\.\d+)?)\s*([bm])(?:[-_/]|$)/ig)];
-  if (!matches.length) return 0;
-  return Math.max(...matches.map((match) => {
-    const amount = Number(match[1]);
-    return Number.isFinite(amount) ? Math.min(match[2].toLowerCase() === 'b' ? amount : amount / 1000, 500) : 0;
-  }));
-}
-
-function scoreModelForTask(model, taskType) {
-  const id = normalizedId(model);
-  const lower = id.toLowerCase();
-  if (!id || NON_CHAT_MODEL.test(lower)) return Number.NEGATIVE_INFINITY;
-
-  const isVision = VISION_MODEL.test(lower);
-  if (taskType === 'vision') {
-    if (!isVision) return Number.NEGATIVE_INFINITY;
-    return 1000 + modelSizeScore(lower) + (/instruct|chat|it\b/i.test(lower) ? 10 : 0);
-  }
-  if (isVision) return Number.NEGATIVE_INFINITY;
-
-  let score = modelSizeScore(lower);
-  if (GENERAL_MODEL.test(lower)) score += 20;
-  if (/mini|small|3b|4b|7b|8b|flash|lite/i.test(lower)) score -= 8;
-  if (/pro|opus|sonnet|plus|flagship|max|turbo/i.test(lower)) score += 12;
-
-  if (taskType === 'coding' && CODING_MODEL.test(lower)) score += 1000;
-  if (taskType === 'reasoning' && REASONING_MODEL.test(lower)) score += 1000;
-  if (taskType === 'research' && RESEARCH_MODEL.test(lower)) score += 1000;
-  if (taskType === 'assistant' && /(?:assistant|instruct|chat|general|plus|pro|opus|sonnet)/i.test(lower)) score += 150;
-  if (taskType === 'assistant' && (CODING_MODEL.test(lower) || REASONING_MODEL.test(lower))) score -= 1000;
-  return score;
-}
-
-/**
- * Choose the model ID to send to /chat/completions.
- * Manual routing pins the global model; Auto routes by task and optional overrides.
- */
 /**
  * Resolve a model request without confusing model-catalogue visibility with
  * upstream provider availability.
