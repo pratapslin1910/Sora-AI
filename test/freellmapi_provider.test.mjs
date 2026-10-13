@@ -243,8 +243,8 @@ describe('FreeLLMAPIProvider Unit & Mock Tests', () => {
       onToken: () => {},
     });
     assert.equal(fullText, 'Model identified');
-    assert.ok(models.includes('actual-model-test'));
-    assert.ok(models.includes('resolved-model-v2'));
+    assert.ok(!models.includes('actual-model-test'), 'Do not claim the requested model succeeded before the gateway responds.');
+    assert.ok(models.includes('resolved-model-v2'), 'Report the actual model ID returned by the gateway.');
   });
 
   it('filters inline tagged content across delta boundaries', async () => {
