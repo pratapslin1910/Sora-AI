@@ -76,6 +76,10 @@ export const ExtensionsManagerView: React.FC<ExtensionsManagerViewProps> = ({ pe
   };
 
   const handleReload = async (id: string) => {
+    if (hasPendingChanges) {
+      showNotification('Apply or discard pending changes before reloading an extension.', true);
+      return;
+    }
     setActiveActionId(id);
     try {
       const res = await reloadExtension(id);
@@ -93,6 +97,10 @@ export const ExtensionsManagerView: React.FC<ExtensionsManagerViewProps> = ({ pe
   };
 
   const handleRemove = async (ext: InstalledExtension) => {
+    if (hasPendingChanges) {
+      showNotification('Apply or discard pending changes before removing an extension.', true);
+      return;
+    }
     if (!window.confirm(`Are you sure you want to remove the extension "${ext.name}"?`)) {
       return;
     }
@@ -115,6 +123,10 @@ export const ExtensionsManagerView: React.FC<ExtensionsManagerViewProps> = ({ pe
 
   const handleImport = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (hasPendingChanges) {
+      showNotification('Apply or discard pending changes before importing another extension.', true);
+      return;
+    }
     if (!importPath.trim()) return;
 
     setIsImporting(true);
@@ -263,7 +275,8 @@ export const ExtensionsManagerView: React.FC<ExtensionsManagerViewProps> = ({ pe
           <button
             type="button"
             onClick={() => setShowImportBar((prev) => !prev)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-cyan-500/30 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 font-medium text-xs transition-colors"
+            disabled={hasPendingChanges || isApplyingChanges}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-cyan-500/30 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 font-medium text-xs transition-colors disabled:opacity-40"
           >
             <FolderOpenIcon sx={{ fontSize: 15 }} />
             Import Extension
@@ -271,8 +284,9 @@ export const ExtensionsManagerView: React.FC<ExtensionsManagerViewProps> = ({ pe
           <button
             type="button"
             onClick={loadData}
+            disabled={hasPendingChanges || isApplyingChanges}
             title="Refresh extension catalog"
-            className="p-1.5 rounded-xl border border-white/10 hover:bg-white/[0.06] text-slate-400 hover:text-white transition-colors"
+            className="p-1.5 rounded-xl border border-white/10 hover:bg-white/[0.06] text-slate-400 hover:text-white transition-colors disabled:opacity-40"
           >
             <RefreshIcon sx={{ fontSize: 16 }} />
           </button>
@@ -314,7 +328,7 @@ export const ExtensionsManagerView: React.FC<ExtensionsManagerViewProps> = ({ pe
             </div>
             <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs text-slate-300">
               <div><strong className="text-white">{pendingChangeCount}</strong> extension(s) have pending changes.</div>
-              <div className="mt-1 text-slate-500">Current execution policy: <span className="text-cyan-300 font-semibold">{permissionAllowance === 'strict' ? 'Strict' : permissionAllowance === 'sandbox' ? 'Sandbox' : 'Full Access'}</span></div>
+              <div className="mt-1 text-slate-500">Selected policy: <span className="text-cyan-300 font-semibold">{permissionAllowance === 'strict' ? 'Strict' : permissionAllowance === 'sandbox' ? 'Sandbox' : 'Full Access'}</span>. Save the General settings tab to activate a changed policy.</div>
             </div>
             <div className="flex justify-end gap-2">
               <button type="button" disabled={isApplyingChanges} onClick={() => setShowApplyDialog(false)} className="px-3 py-2 rounded-lg border border-white/10 text-slate-300 hover:bg-white/[0.06] text-xs disabled:opacity-50">Cancel</button>
@@ -473,7 +487,7 @@ export const ExtensionsManagerView: React.FC<ExtensionsManagerViewProps> = ({ pe
                     <Tooltip title="Reload extension" arrow>
                       <button
                         type="button"
-                        disabled={isBusy}
+                        disabled={isBusy || hasPendingChanges || isApplyingChanges}
                         onClick={() => handleReload(ext.id)}
                         className="p-1.5 rounded-lg border border-white/10 hover:bg-white/5 text-slate-400 hover:text-white transition-colors disabled:opacity-40"
                       >
@@ -484,7 +498,7 @@ export const ExtensionsManagerView: React.FC<ExtensionsManagerViewProps> = ({ pe
                     <Tooltip title="Remove extension" arrow>
                       <button
                         type="button"
-                        disabled={isBusy}
+                        disabled={isBusy || hasPendingChanges || isApplyingChanges}
                         onClick={() => handleRemove(ext)}
                         className="p-1.5 rounded-lg border border-rose-500/20 hover:bg-rose-500/10 text-rose-400 hover:text-rose-300 transition-colors disabled:opacity-40"
                       >
