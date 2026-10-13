@@ -32,14 +32,15 @@ export function getConcreteModelIds(catalogue) {
 }
 
 /** Return only concrete models whose live execution status is exactly ready. */
-export function getReadyModelIds(catalogue) {
+export function getReadyModelIds(catalogue, { assumeReadyWhenFiltered = false } = {}) {
   if (!Array.isArray(catalogue)) return [];
   const ready = catalogue.filter((entry) => {
     if (typeof entry === 'string') return false;
     const status = String(entry?.execution_status ?? entry?.executionStatus ?? '').trim().toLowerCase();
     if (status) return status === 'ready';
-    // Older FreeLLMAPI releases expose availability without execution_status.
-    return entry?.available === true || entry?.available === 1 || entry?.available === '1';
+    // Older gateway releases may omit status metadata; the API's available=true
+    // response is already filtered upstream, so absence of status is acceptable there.
+    return assumeReadyWhenFiltered || entry?.available === true || entry?.available === 1 || entry?.available === '1';
   });
   return getConcreteModelIds(ready);
 }
