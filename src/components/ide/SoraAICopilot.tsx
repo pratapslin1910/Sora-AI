@@ -64,6 +64,8 @@ export interface AgentMessage {
 
 interface SoraAICopilotProps {
   workspaceRoot: string;
+  initialTask?: string;
+  onClearInitialTask?: () => void;
   activeTab?: OpenTab;
   onOpenFile?: (path: string) => void;
   onApplyCodeToEditor: (code: string) => void;
@@ -74,6 +76,8 @@ interface SoraAICopilotProps {
 
 export const SoraAICopilot: React.FC<SoraAICopilotProps> = ({
   workspaceRoot,
+  initialTask,
+  onClearInitialTask,
   activeTab,
   onOpenFile,
   onApplyCodeToEditor,
@@ -620,6 +624,15 @@ When completely finished, provide your final answer with no further tool calls.`
       onRunTerminalCommand,
     ]
   );
+
+  // A delegated task waits for a real IDE workspace, then starts under the selected security mode.
+  useEffect(() => {
+    if (!initialTask?.trim()) return;
+    setUserInput(initialTask);
+    if (!workspaceRoot.trim() || isAgentRunning) return;
+    onClearInitialTask?.();
+    void runAgentTask(initialTask);
+  }, [initialTask, workspaceRoot, isAgentRunning, runAgentTask, onClearInitialTask]);
 
   const handleStopAgent = () => {
     isAgentActiveRef.current = false;
