@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Clock,
+  Square,
 } from 'lucide-react';
 import { TerminalEntry } from './types';
 
@@ -17,6 +18,7 @@ interface IntegratedTerminalProps {
   terminalHistory: TerminalEntry[];
   isExecuting: boolean;
   onRunCommand: (cmd: string) => Promise<any>;
+  onStopProcess: (processId: string) => Promise<void>;
   onClear: () => void;
   onClose: () => void;
 }
@@ -26,6 +28,7 @@ export const IntegratedTerminal: React.FC<IntegratedTerminalProps> = ({
   terminalHistory,
   isExecuting,
   onRunCommand,
+  onStopProcess,
   onClear,
   onClose,
 }) => {
@@ -168,20 +171,33 @@ export const IntegratedTerminal: React.FC<IntegratedTerminalProps> = ({
                     <Clock className="w-3 h-3" />
                     {entry.timestamp}
                   </span>
-                  <span
-                    className={`flex items-center gap-1 px-1.5 py-0.2 rounded text-[9px] ${
+                  {entry.running ? (
+                    <>
+                      <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-[#007acc]/15 text-[#60a5fa] border border-[#007acc]/30">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#60a5fa] animate-pulse" />
+                        RUNNING
+                      </span>
+                      {entry.processId && (
+                        <button
+                          type="button"
+                          onClick={() => { void onStopProcess(entry.processId!); }}
+                          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-[#FF384C]/10 text-[#FF7080] border border-[#FF384C]/30 hover:bg-[#FF384C]/20"
+                          title="Stop this persistent process"
+                        >
+                          <Square className="w-2.5 h-2.5" /> Stop
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <span className={`flex items-center gap-1 px-1.5 py-0.2 rounded text-[9px] ${
                       entry.code === 0
                         ? 'bg-[#00D99A]/15 text-[#00D99A] border border-[#00D99A]/30'
                         : 'bg-[#FF384C]/15 text-[#FF384C] border border-[#FF384C]/30'
-                    }`}
-                  >
-                    {entry.code === 0 ? (
-                      <CheckCircle2 className="w-2.5 h-2.5" />
-                    ) : (
-                      <AlertCircle className="w-2.5 h-2.5" />
-                    )}
-                    <span>Exit {entry.code}</span>
-                  </span>
+                    }`}>
+                      {entry.code === 0 ? <CheckCircle2 className="w-2.5 h-2.5" /> : <AlertCircle className="w-2.5 h-2.5" />}
+                      <span>Exit {entry.code}</span>
+                    </span>
+                  )}
                 </div>
               </div>
 
