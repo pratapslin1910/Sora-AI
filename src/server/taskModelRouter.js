@@ -1,7 +1,7 @@
 /**
- * Task-aware routing for OpenAI-compatible FreeLLMAPI model IDs.
- * The provider exposes model IDs, not reliable capability metadata, so this
- * uses conservative name heuristics and supports per-task user overrides.
+ * Model routing policy for OpenAI-compatible FreeLLMAPI.
+ * Auto mode delegates real provider/key/quota availability to FreeLLMAPI;
+ * only Manual mode or an explicit task override pins a specific model ID.
  */
 export const MODEL_TASK_TYPES = Object.freeze([
   'reasoning',
