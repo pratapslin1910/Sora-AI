@@ -41,14 +41,15 @@ export async function checkGatewayHealth(): Promise<GatewayHealth> {
 }
 
 export async function fetchAvailableModels(): Promise<string[]> {
-  try {
-    const res = await fetch('/api/models');
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data?.models || [];
-  } catch {
-    return [];
+  const res = await fetch('/api/models');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || `Model discovery failed (HTTP ${res.status}).`);
   }
+  if (!Array.isArray(data?.models)) {
+    throw new Error('The gateway returned an invalid available-model list.');
+  }
+  return data.models.filter((model: unknown): model is string => typeof model === 'string' && model.trim().length > 0);
 }
 
 export interface GatewaySettings {
@@ -127,6 +128,8 @@ export interface StreamChatOptions {
   signal?: AbortSignal;
   recallMemory?: boolean;
   currentChatId?: string | null;
+  onModel?: (model: string) => void;
+  onRoutedVia?: (route: string) => void;
   onRecall?: (recalled: RecalledContextPayload) => void;
   onMemorySaved?: (memories: MemoryItem[]) => void;
   onReasoning?: (thought: string) => void;
@@ -144,6 +147,8 @@ export async function streamChatMessage(
     signal,
     recallMemory = true,
     currentChatId = null,
+    onModel,
+    onRoutedVia,
     onRecall,
     onMemorySaved,
     onReasoning,
@@ -206,6 +211,12 @@ export async function streamChatMessage(
           if (payload.error) {
             onError(payload.error);
             return;
+          }
+          if (typeof payload.selectedModel === 'string' && payload.selectedModel) {
+            onModel?.(payload.selectedModel);
+          }
+          if (typeof payload.routedVia === 'string' && payload.routedVia) {
+            onRoutedVia?.(payload.routedVia);
           }
           if (payload.recalled && onRecall) {
             onRecall(payload.recalled);

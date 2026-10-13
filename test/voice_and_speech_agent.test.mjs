@@ -100,6 +100,7 @@ test('Sora Natural Female Voice Agent & Core Configuration Tests', async (t) => 
 
   await t.test('3. Sora identifies as Sora across new chats, restored sessions, and model switches', async () => {
     const mockProvider = new FreeLLMAPIProvider();
+    mockProvider.getModels = async () => ['test-model'];
     let sentMessages = null;
     mockProvider.chat = async ({ messages }) => {
       sentMessages = messages;

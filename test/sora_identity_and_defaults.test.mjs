@@ -40,6 +40,7 @@ test('Sora AI Permanent Identity and Response Defaults Tests', async (t) => {
       apiKey: 'test-key',
       model: 'test-model',
     });
+    mockProvider.getModels = async () => ['test-model'];
     mockProvider.streamChat = async ({ messages, onToken, onDone }) => {
       interceptedMessages = messages;
       onToken('I am Sora, your AI assistant.');
@@ -98,6 +99,7 @@ test('Sora AI Permanent Identity and Response Defaults Tests', async (t) => {
 
     let interceptedMessages = null;
     const mockProvider = new FreeLLMAPIProvider();
+    mockProvider.getModels = async () => ['test-model'];
     mockProvider.streamChat = async ({ messages, onToken, onDone }) => {
       interceptedMessages = messages;
       onToken('Hello! I am Sora.');
@@ -155,6 +157,7 @@ test('Sora AI Permanent Identity and Response Defaults Tests', async (t) => {
 
   await t.test('4. New chats, restored chats, and streaming requests preserving the same identity', async () => {
     const mockProvider = new FreeLLMAPIProvider();
+    mockProvider.getModels = async () => ['test-model'];
     let sentMessages = null;
     mockProvider.chat = async ({ messages }) => {
       sentMessages = messages;
@@ -266,6 +269,7 @@ TOOL CALL PROTOCOL:
 
     let sentMessages = null;
     const mockProvider = new FreeLLMAPIProvider();
+    mockProvider.getModels = async () => ['test-model'];
     mockProvider.chat = async ({ messages }) => {
       sentMessages = messages;
       return {

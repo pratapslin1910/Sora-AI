@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { exec } from 'node:child_process';
 import { FreeLLMAPIProvider } from './FreeLLMAPIProvider.js';
+import { chooseRandomModel, isConcreteModelId } from './modelRouting.js';
 import { listChats, getChatById, saveChat, deleteChat, deleteAllChats, deleteChatsOlderThan, searchChats } from './chatStore.js';
 import { performWebSearch, readSiteContent } from './webSearch.js';
 import {
@@ -514,10 +515,15 @@ export async function handleApiRequest(req, res, customProvider) {
   // ── GET /api/models ──────────────────────────────────────────────────────
   if (req.method === 'GET' && pathname === '/api/models') {
     try {
-      const models = await provider.getModels();
-      jsonResponse(res, 200, { ok: true, models });
+      // Return the full concrete catalogue for diagnostics and only ready concrete
+      // models for the selector; the UI must not invent fallback IDs.
+      const [allModels, models] = await Promise.all([
+        provider.getModels({ readyOnly: false }),
+        provider.getModels({ readyOnly: true }),
+      ]);
+      jsonResponse(res, 200, { ok: true, models, allModels, count: models.length, catalogCount: allModels.length });
     } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: provider.formatError(err) });
+      jsonResponse(res, 502, { ok: false, error: provider.formatError(err), models: [], allModels: [] });
     }
     return true;
   }
@@ -555,12 +561,14 @@ export async function handleApiRequest(req, res, customProvider) {
     }
     const current = loadSettings();
     const updated = {
+      // Preserve fields managed by other panels/features when saving this form.
+      ...current,
       baseUrl: typeof body.baseUrl === 'string' ? body.baseUrl.trim() : (current.baseUrl || ''),
       // Only update apiKey if a non-masked value was provided
       apiKey: (typeof body.apiKey === 'string' && !body.apiKey.includes('•'))
         ? body.apiKey.trim()
         : (current.apiKey || ''),
-      model: typeof body.model === 'string' ? body.model.trim() : (current.model || ''),
+      model: typeof body.model === 'string' && body.model.trim() ? body.model.trim() : (String(current.model || DEFAULT_MODEL).trim() || DEFAULT_MODEL),
       autoDeleteChats: typeof body.autoDeleteChats === 'boolean'
         ? body.autoDeleteChats
         : Boolean(current.autoDeleteChats),
@@ -596,6 +604,60 @@ export async function handleApiRequest(req, res, customProvider) {
     if (!messages || !Array.isArray(messages)) {
       jsonResponse(res, 400, { error: 'Missing or invalid "messages" in request body.' });
       return true;
+    }
+
+    // Resolve a verified concrete model once for this turn. Vision requests remain
+    // on upstream Auto so the gateway can choose a vision-capable provider.
+    const settings = loadSettings();
+    // The real provider is constructed from saved settings; respect an injected provider's own default in tests and custom integrations.
+    const configuredModel = String(provider.defaultModel || settings.model || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
+    const requestedModel = typeof model === 'string' && model.trim() ? model.trim() : configuredModel;
+    const hasVisionPayload = messages.some((message) =>
+      Array.isArray(message?.content) && message.content.some((part) => part?.type === 'image_url')
+    );
+    let selectedModel = requestedModel;
+
+    if (requestedModel.toLowerCase() === 'auto' && hasVisionPayload) {
+      selectedModel = 'auto';
+    } else {
+      let readyModels;
+      try {
+        readyModels = await provider.getModels({ readyOnly: true });
+      } catch (err) {
+        jsonResponse(res, 502, {
+          ok: false,
+          error: 'Could not verify currently available FreeLLMAPI models: ' + provider.formatError(err),
+          code: 'model_discovery_failed',
+        });
+        return true;
+      }
+
+      if (requestedModel.toLowerCase() === 'auto') {
+        try {
+          selectedModel = chooseRandomModel(readyModels);
+        } catch (err) {
+          jsonResponse(res, 503, {
+            ok: false,
+            error: err.message || 'FreeLLMAPI has no ready concrete models available.',
+            code: 'no_ready_models',
+          });
+          return true;
+        }
+      } else if (requestedModel.toLowerCase() === 'fusion' || requestedModel.toLowerCase().startsWith('auto:')) {
+        // Keep explicitly configured FreeLLMAPI router targets valid, but do not
+        // treat Claude family slot aliases as concrete chat models.
+        selectedModel = requestedModel;
+      } else if (isConcreteModelId(requestedModel) && readyModels.includes(requestedModel)) {
+        selectedModel = requestedModel;
+      } else {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: `Model "${requestedModel}" is not currently available. Refresh the model list and select an available model or Auto.`,
+          code: 'model_unavailable',
+          availableModels: readyModels,
+        });
+        return true;
+      }
     }
 
     // Extract any existing client-provided system message
@@ -644,7 +706,6 @@ export async function handleApiRequest(req, res, customProvider) {
 
     // Build centralized, versioned system prompt adhering to strict 4-tier hierarchy
     await ensureExtensionManager();
-    const settings = loadSettings();
     const permissionAllowance = settings.permissionAllowance || 'full_access';
     extensionManager.permissionManager.setAllowanceMode(permissionAllowance);
 
@@ -656,7 +717,7 @@ export async function handleApiRequest(req, res, customProvider) {
     const centralizedSystemPrompt = buildSystemPrompt({
       clientSystemPrompt,
       recalledContext: recalledData?.formattedContext || '',
-      currentModel: model || provider.defaultModel || 'auto',
+      currentModel: selectedModel,
       toolsPrompt,
       permissionAllowance,
     });
@@ -743,11 +804,17 @@ export async function handleApiRequest(req, res, customProvider) {
       }
 
       try {
+        res.write(`data: ${JSON.stringify({ selectedModel })}\n\n`);
         await provider.streamChat({
           messages: messagesForModel,
-          model,
+          model: selectedModel,
           temperature,
           signal: abortController.signal,
+          onRoutedVia: (routedVia) => {
+            if (!res.writableEnded) {
+              res.write(`data: ${JSON.stringify({ routedVia })}\n\n`);
+            }
+          },
           onReasoning: (reasoning) => {
             if (!res.writableEnded) {
               res.write(`data: ${JSON.stringify({ reasoning })}\n\n`);
@@ -781,7 +848,7 @@ export async function handleApiRequest(req, res, customProvider) {
       try {
         const result = await provider.chat({
           messages: messagesForModel,
-          model,
+          model: selectedModel,
           temperature,
           signal: abortController.signal,
         });
@@ -796,6 +863,8 @@ export async function handleApiRequest(req, res, customProvider) {
           message: cleanMessage,
           recalled: recalledData,
           memorySaved: autoSavedMemories,
+          selectedModel,
+          routedVia: result.routedVia || null,
         });
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: provider.formatError(err) });
