@@ -12,6 +12,7 @@ export const BottomStatusBar: React.FC<BottomStatusBarProps> = ({
   const [localTime, setLocalTime] = useState<string>('');
   const [activeModel, setActiveModel] = useState('Waiting for first request');
   const [activeTask, setActiveTask] = useState('Idle');
+  const [activeError, setActiveError] = useState('');
   const [isModelActive, setIsModelActive] = useState(false);
 
   useEffect(() => {
@@ -42,19 +43,23 @@ export const BottomStatusBar: React.FC<BottomStatusBarProps> = ({
       if (!detail) return;
       if (detail.type === 'start') {
         setIsModelActive(true);
+        setActiveError('');
         setActiveTask(detail.task || 'Assistant');
         setActiveModel(detail.model || 'Resolving model…');
       } else if (detail.type === 'model') {
+        setActiveError('');
         setActiveModel(detail.model || 'Unknown model');
         if (detail.task) setActiveTask(detail.task);
       } else if (detail.type === 'done') {
         setIsModelActive(false);
+        setActiveError('');
         if (detail.model) setActiveModel(detail.model);
         setActiveTask('Idle');
       } else if (detail.type === 'error') {
         setIsModelActive(false);
-        setActiveTask('Error');
-        setActiveModel(detail.error || 'Request failed');
+        if (detail.model) setActiveModel(detail.model);
+        setActiveTask(detail.task ? `${detail.task} failed` : 'Failed');
+        setActiveError(detail.error || 'Request failed');
       }
     };
     window.addEventListener('sora:model-activity', onModelActivity);
@@ -79,11 +84,11 @@ export const BottomStatusBar: React.FC<BottomStatusBarProps> = ({
       </div>
 
       {/* Runtime model loader — populated by actual chat stream responses. */}
-      <div className="hidden md:flex items-center gap-2 border-l border-[#222222] pl-4 min-w-0" title={`Task: ${activeTask}; Model: ${activeModel}`}>
-        <Cpu className={`w-3.5 h-3.5 ${isModelActive ? 'text-[#60a5fa] animate-pulse' : 'text-[#71717A]'}`} />
+      <div className="hidden md:flex items-center gap-2 border-l border-[#222222] pl-4 min-w-0" title={`Task: ${activeTask}; Model: ${activeModel}${activeError ? '; Error: ' + activeError : ''}`}>
+        <Cpu className={`w-3.5 h-3.5 ${activeError ? 'text-[#FF384C]' : isModelActive ? 'text-[#60a5fa] animate-pulse' : 'text-[#71717A]'}`} />
         <span className="text-[#71717A]">Model</span>
         <span className="text-[#D4D4D8] font-semibold truncate max-w-[190px]">{activeModel}</span>
-        <span className={`text-[10px] ${isModelActive ? 'text-[#60a5fa]' : 'text-[#71717A]'}`}>{activeTask}</span>
+        <span className={`text-[10px] ${activeError ? 'text-[#FF384C]' : isModelActive ? 'text-[#60a5fa]' : 'text-[#71717A]'}`}>{activeTask}</span>
       </div>
 
       {/* Local system clock */}
