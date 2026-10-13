@@ -765,12 +765,17 @@ export async function handleApiRequest(req, res, customProvider) {
     // Build centralized, versioned system prompt adhering to strict 4-tier hierarchy
     await ensureExtensionManager();
     const settings = loadSettings();
-    const permissionAllowance = settings.permissionAllowance || 'full_access';
-    extensionManager.permissionManager.setAllowanceMode(permissionAllowance);
+    const assistantPermissionAllowance = settings.permissionAllowance || 'full_access';
+    const isIdeCopilotRequest = /IDE COPILOT SECURITY MODE:/i.test(clientSystemPrompt);
+    const copilotSecurityMode = ['full_access', 'sandbox', 'strict'].includes(settings.copilotSecurityMode)
+      ? settings.copilotSecurityMode
+      : 'strict';
+    const permissionAllowance = isIdeCopilotRequest ? copilotSecurityMode : assistantPermissionAllowance;
+    // Extension permissions belong to the Assistant and must not inherit Copilot mode.
+    extensionManager.permissionManager.setAllowanceMode(assistantPermissionAllowance);
 
     // IDE Copilot and Sora Assistant are separate agents. Only the Assistant receives
     // the app-internal hand-off tool; Copilot gets workspace tools from its own prompt.
-    const isIdeCopilotRequest = /IDE COPILOT SECURITY MODE:/i.test(clientSystemPrompt);
     const assistantDelegationToolPrompt = isIdeCopilotRequest ? '' : [
       'SORA APP TASK-HANDOFF TOOL:',
       'Use delegate_to_copilot only when the user asks for a code change, debugging, testing, or implementation that belongs in the currently opened IDE workspace.',
