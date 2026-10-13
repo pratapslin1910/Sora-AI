@@ -167,7 +167,7 @@ export class FreeLLMAPIProvider {
       // Backward compatibility: older releases support available=true but may
       // not return execution_status. Unknown/exhausted statuses are not accepted.
       const availableCatalogue = await this.getModelCatalogue({ filter: 'available' });
-      return getReadyModelIds(availableCatalogue);
+      return getReadyModelIds(availableCatalogue, { assumeReadyWhenFiltered: true });
     } catch (err) {
       throw new Error(this.formatError(err));
     }
