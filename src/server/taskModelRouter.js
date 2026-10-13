@@ -56,6 +56,7 @@ function scoreModelForTask(model, taskType) {
   if (taskType === 'reasoning' && REASONING_MODEL.test(lower)) score += 1000;
   if (taskType === 'research' && RESEARCH_MODEL.test(lower)) score += 1000;
   if (taskType === 'assistant' && /(?:assistant|instruct|chat|general|plus|pro|opus|sonnet)/i.test(lower)) score += 150;
+  if (taskType === 'assistant' && (CODING_MODEL.test(lower) || REASONING_MODEL.test(lower))) score -= 1000;
   return score;
 }
 
