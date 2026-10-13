@@ -2533,6 +2533,9 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                   ? 'Copilot may run ordinary commands in the integrated terminal. It must ask before changing files, downloading/installing packages, or using network-download commands.'
                   : 'Copilot may edit files, install packages, run tests, and build autonomously inside the active workspace. Deleting files or folders still requires confirmation.'}
               </p>
+              <p className="text-[10px] text-slate-500 leading-relaxed">
+                Sandbox mode applies Sora's command and workspace checks at the application level; it is not an OS/container isolation boundary, so arbitrary project scripts can still access files allowed to your Windows account.
+              </p>
             </div>
 
             {/* Status / Message */}
