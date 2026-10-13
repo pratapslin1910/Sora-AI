@@ -408,6 +408,14 @@ export class FreeLLMAPIProvider {
               const chunkJson = JSON.parse(dataStr);
               if (chunkJson?.model) await reportModel(chunkJson.model);
               const delta = chunkJson?.choices?.[0]?.delta;
+              if ((delta?.reasoning_content || delta?.reasoning || delta?.content) && !reportedModel) {
+                // A successful chunk confirms that the gateway accepted the request.
+                // If no actual model ID is returned, report the routing mode instead
+                // of a guessed model from /models.
+                await reportModel(chosenModel.toLowerCase() === 'auto'
+                  ? 'FreeLLMAPI Auto'
+                  : chosenModel + ' (gateway response confirmed; actual ID not reported)');
+              }
               if (delta?.reasoning_content || delta?.reasoning) {
                 const rChunk = delta.reasoning_content || delta.reasoning;
                 await onReasoning(rChunk);
@@ -430,6 +438,14 @@ export class FreeLLMAPIProvider {
               const chunkJson = JSON.parse(dataStr);
               if (chunkJson?.model) await reportModel(chunkJson.model);
               const delta = chunkJson?.choices?.[0]?.delta;
+              if ((delta?.reasoning_content || delta?.reasoning || delta?.content) && !reportedModel) {
+                // A successful chunk confirms that the gateway accepted the request.
+                // If no actual model ID is returned, report the routing mode instead
+                // of a guessed model from /models.
+                await reportModel(chosenModel.toLowerCase() === 'auto'
+                  ? 'FreeLLMAPI Auto'
+                  : chosenModel + ' (gateway response confirmed; actual ID not reported)');
+              }
               if (delta?.reasoning_content || delta?.reasoning) {
                 const rChunk = delta.reasoning_content || delta.reasoning;
                 await onReasoning(rChunk);
