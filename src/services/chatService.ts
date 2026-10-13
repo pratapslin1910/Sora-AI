@@ -61,6 +61,7 @@ export interface GatewaySettings {
   systemPromptVersion?: string;
   defaultIdentity?: string;
   permissionAllowance?: 'full_access' | 'sandbox' | 'strict';
+  copilotSecurityMode?: 'full_access' | 'sandbox' | 'strict';
 }
 
 export { parseReasoningAndAnswer, deduplicateAnswer } from '../utils/responseParser';
@@ -71,7 +72,7 @@ export type { SpeechPreparationOptions } from '../utils/speechPreparation';
 export async function getSettings(): Promise<GatewaySettings> {
   try {
     const res = await fetch('/api/settings');
-    if (!res.ok) return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '', autoDeleteChats: false, chatRetentionDays: 30, permissionAllowance: 'full_access' };
+    if (!res.ok) return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '', autoDeleteChats: false, chatRetentionDays: 30, permissionAllowance: 'full_access', copilotSecurityMode: 'strict' };
     const data = await res.json();
     return {
       baseUrl: data.baseUrl || '',
@@ -83,6 +84,7 @@ export async function getSettings(): Promise<GatewaySettings> {
       systemPromptVersion: data.systemPromptVersion || '2026.1.0',
       defaultIdentity: data.defaultIdentity || 'Sora',
       permissionAllowance: data.permissionAllowance || 'full_access',
+      copilotSecurityMode: data.copilotSecurityMode || 'strict',
     };
   } catch {
     return { baseUrl: '', apiKeyMasked: '', apiKeySet: false, model: '', autoDeleteChats: false, chatRetentionDays: 30, permissionAllowance: 'full_access' };
@@ -96,6 +98,7 @@ export async function saveSettings(settings: {
   autoDeleteChats?: boolean;
   chatRetentionDays?: number;
   permissionAllowance?: 'full_access' | 'sandbox' | 'strict';
+  copilotSecurityMode?: 'full_access' | 'sandbox' | 'strict';
 }): Promise<boolean> {
   try {
     const res = await fetch('/api/settings', {
