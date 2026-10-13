@@ -354,7 +354,8 @@ export class FreeLLMAPIProvider {
     };
 
     try {
-      await reportModel(chosenModel);
+      // Do not report the requested model as active before the gateway accepts it.
+      // In Auto mode the actual upstream model is only known from response chunks.
       const res = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
