@@ -1,0 +1,7 @@
+{
+  "name": "sora-persistent-session-test",
+  "private": true,
+  "scripts": {
+    "dev": "node -e \"setInterval(() => console.log(12345), 1000)\""
+  }
+}

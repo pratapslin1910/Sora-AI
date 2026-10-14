@@ -17,6 +17,7 @@ import path from 'node:path';
 import { exec, execFile, spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { FreeLLMAPIProvider } from './FreeLLMAPIProvider.js';
+import { chooseRandomModel, isConcreteModelId } from './modelRouting.js';
 import { cacheProviderModels, getCachedProviderModels, selectTaskModel } from './taskModelRouter.js';
 import { listChats, getChatById, saveChat, deleteChat, deleteAllChats, deleteChatsOlderThan, searchChats } from './chatStore.js';
 import { performWebSearch, readSiteContent } from './webSearch.js';
@@ -649,11 +650,16 @@ export async function handleApiRequest(req, res, customProvider) {
   // ── GET /api/models ──────────────────────────────────────────────────────
   if (req.method === 'GET' && pathname === '/api/models') {
     try {
-      const models = await provider.getModels();
-      cacheProviderModels(provider, models);
-      jsonResponse(res, 200, { ok: true, models });
+      // Return the full concrete catalogue for diagnostics and only ready concrete
+      // models for the selector; the UI must not invent fallback IDs.
+      const [allModels, models] = await Promise.all([
+        provider.getModels({ readyOnly: false }),
+        provider.getModels({ readyOnly: true }),
+      ]);
+      cacheProviderModels(provider, allModels);
+      jsonResponse(res, 200, { ok: true, models, allModels, count: models.length, catalogCount: allModels.length });
     } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: provider.formatError(err) });
+      jsonResponse(res, 502, { ok: false, error: provider.formatError(err), models: [], allModels: [] });
     }
     return true;
   }
@@ -692,12 +698,14 @@ export async function handleApiRequest(req, res, customProvider) {
     }
     const current = loadSettings();
     const updated = {
+      // Preserve fields managed by other panels/features when saving this form.
+      ...current,
       baseUrl: typeof body.baseUrl === 'string' ? body.baseUrl.trim() : (current.baseUrl || ''),
       // Only update apiKey if a non-masked value was provided
       apiKey: (typeof body.apiKey === 'string' && !body.apiKey.includes('•'))
         ? body.apiKey.trim()
         : (current.apiKey || ''),
-      model: typeof body.model === 'string' ? body.model.trim() : (current.model || ''),
+      model: typeof body.model === 'string' && body.model.trim() ? body.model.trim() : (String(current.model || DEFAULT_MODEL).trim() || DEFAULT_MODEL),
       autoDeleteChats: typeof body.autoDeleteChats === 'boolean'
         ? body.autoDeleteChats
         : Boolean(current.autoDeleteChats),
@@ -753,11 +761,71 @@ export async function handleApiRequest(req, res, customProvider) {
       return true;
     }
 
-    const { messages, model: requestedModel, stream = true, temperature, recallMemory = true, currentChatId, taskType = 'reasoning' } = body;
+    const { messages, model: rawRequestedModel, stream = true, temperature, recallMemory = true, currentChatId, taskType = 'reasoning' } = body;
 
     if (!messages || !Array.isArray(messages)) {
       jsonResponse(res, 400, { error: 'Missing or invalid "messages" in request body.' });
       return true;
+    }
+
+    // Resolve a verified concrete model once for this turn. Vision requests remain
+    // on upstream Auto so the gateway can choose a vision-capable provider.
+    const settings = loadSettings();
+    const configuredModel = String(provider.defaultModel || settings.model || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
+    const requestedModel = typeof rawRequestedModel === 'string' && rawRequestedModel.trim() ? rawRequestedModel.trim() : configuredModel;
+    const hasVisionPayload = messages.some((message) =>
+      Array.isArray(message?.content) && message.content.some((part) => part?.type === 'image_url')
+    );
+    let selectedModel = requestedModel;
+
+    if (requestedModel.toLowerCase() === 'auto' && (hasVisionPayload || taskType === 'vision')) {
+      selectedModel = 'auto';
+    } else {
+      let readyModels;
+      try {
+        readyModels = await provider.getModels({ readyOnly: true });
+        cacheProviderModels(provider, readyModels);
+      } catch (err) {
+        jsonResponse(res, 502, {
+          ok: false,
+          error: 'Could not verify currently available FreeLLMAPI models: ' + provider.formatError(err),
+          code: 'model_discovery_failed',
+        });
+        return true;
+      }
+
+      if (requestedModel.toLowerCase() === 'auto') {
+        const configuredTaskModels = settings.taskModels && typeof settings.taskModels === 'object' ? settings.taskModels : {};
+        const taskOverride = typeof configuredTaskModels[taskType] === 'string' ? configuredTaskModels[taskType].trim() : '';
+        if (taskOverride && taskOverride.toLowerCase() !== 'auto' && readyModels.includes(taskOverride)) {
+          selectedModel = taskOverride;
+        } else {
+          try {
+            selectedModel = chooseRandomModel(readyModels);
+          } catch (err) {
+            jsonResponse(res, 503, {
+              ok: false,
+              error: err.message || 'FreeLLMAPI has no ready concrete models available.',
+              code: 'no_ready_models',
+            });
+            return true;
+          }
+        }
+      } else if (requestedModel.toLowerCase() === 'fusion' || requestedModel.toLowerCase().startsWith('auto:')) {
+        // Keep explicitly configured FreeLLMAPI router targets valid, but do not
+        // treat Claude family slot aliases as concrete chat models.
+        selectedModel = requestedModel;
+      } else if (isConcreteModelId(requestedModel) && readyModels.includes(requestedModel)) {
+        selectedModel = requestedModel;
+      } else {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: `Model "${requestedModel}" is not currently available. Refresh the model list and select an available model or Auto.`,
+          code: 'model_unavailable',
+          availableModels: readyModels,
+        });
+        return true;
+      }
     }
 
     // Extract any existing client-provided system message
@@ -806,7 +874,6 @@ export async function handleApiRequest(req, res, customProvider) {
 
     // Build centralized, versioned system prompt adhering to strict 4-tier hierarchy
     await ensureExtensionManager();
-    const settings = loadSettings();
     const assistantPermissionAllowance = settings.permissionAllowance || 'full_access';
     const isIdeCopilotRequest = /IDE COPILOT SECURITY MODE:/i.test(clientSystemPrompt);
     const copilotSecurityMode = ['full_access', 'sandbox', 'strict'].includes(settings.copilotSecurityMode)
@@ -832,22 +899,7 @@ export async function handleApiRequest(req, res, customProvider) {
       ? ''
       : extensionManager.toolRegistry.formatToolsForPrompt() + (assistantDelegationToolPrompt ? '\n\n' + assistantDelegationToolPrompt : '');
 
-    // Resolve the model independently per task using the live FreeLLMAPI catalogue.
-    // An explicitly supplied request model wins; otherwise Settings controls Auto
-    // (task-aware) versus Manual (one model for every task).
-    const configuredTaskModels = settings.taskModels && typeof settings.taskModels === 'object' ? settings.taskModels : {};
-    const explicitRequestModel = typeof requestedModel === 'string' && requestedModel.trim() && requestedModel.trim().toLowerCase() !== 'auto';
-    const modelSelection = selectTaskModel({
-      taskType,
-      availableModels: getCachedProviderModels(provider),
-      defaultModel: explicitRequestModel ? requestedModel.trim() : (settings.model || provider.defaultModel || 'auto'),
-      routingMode: explicitRequestModel ? 'manual' : (settings.modelRoutingMode === 'manual' ? 'manual' : 'auto'),
-      taskModels: configuredTaskModels,
-    });
-    const model = modelSelection.model;
-    if (modelSelection.warning) {
-      console.warn('[TaskModelRouter]', modelSelection.warning);
-    }
+    const model = selectedModel;
 
     // Keep explicit saved user instructions/preferences available on every request,
     // even when they are not semantically close to the latest question.
@@ -869,7 +921,7 @@ export async function handleApiRequest(req, res, customProvider) {
       clientSystemPrompt,
       userPreferences,
       recalledContext: recalledData?.formattedContext || '',
-      currentModel: model || provider.defaultModel || 'auto',
+      currentModel: selectedModel,
       toolsPrompt,
       permissionAllowance,
     });
@@ -962,57 +1014,140 @@ export async function handleApiRequest(req, res, customProvider) {
       }
 
       try {
-      const writeStreamEvent = async (payload) => {
-        if (res.destroyed || res.writableEnded || abortController.signal.aborted) return;
-        const accepted = res.write(`data: ${JSON.stringify(payload)}\n\n`);
-        if (accepted !== false) return;
-        await new Promise((resolve) => {
-          const cleanup = () => {
-            res.removeListener('drain', onDrain);
-            res.removeListener('close', onClose);
-            res.removeListener('error', onClose);
-          };
-          const onDrain = () => { cleanup(); resolve(); };
-          const onClose = () => { cleanup(); resolve(); };
-          res.once('drain', onDrain);
-          res.once('close', onClose);
-          res.once('error', onClose);
-          if (res.destroyed || res.writableEnded) onClose();
-        });
-      };
+        res.write(`data: ${JSON.stringify({ selectedModel })}\n\n`);
+        const writeStreamEvent = async (payload) => {
+          if (res.destroyed || res.writableEnded || abortController.signal.aborted) return;
+          const accepted = res.write(`data: ${JSON.stringify(payload)}\n\n`);
+          if (accepted !== false) return;
+          await new Promise((resolve) => {
+            const cleanup = () => {
+              res.removeListener('drain', onDrain);
+              res.removeListener('close', onClose);
+              res.removeListener('error', onClose);
+            };
+            const onDrain = () => { cleanup(); resolve(); };
+            const onClose = () => { cleanup(); resolve(); };
+            res.once('drain', onDrain);
+            res.once('close', onClose);
+            res.once('error', onClose);
+            if (res.destroyed || res.writableEnded) onClose();
+          });
+        };
 
-        await provider.streamChat({
-          messages: messagesForModel,
-          model,
-          temperature,
-          signal: abortController.signal,
-          onModel: (activeModel) => writeStreamEvent({ model: activeModel, task: taskType }),
-          onReasoning: (reasoning) => writeStreamEvent({ reasoning }),
-          onToken: (token) => writeStreamEvent({ token }),
-          onDone: () => {
-            if (!res.writableEnded) {
-              res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
-              res.end();
+        // Helper: is this error from a deprecated/penalized/unavailable model
+        // that we can recover from by picking a different model?
+        const isRecoverableModelError = (err) => {
+          const msg = String(err?.message || err || '').toLowerCase();
+          const status = err?.status || err?.statusCode || 0;
+          // 404 = model deprecated/not found, 503 = model on cooldown/overloaded
+          if (status === 404 || status === 503) return true;
+          return /not found|no longer available|deprecated|model.*unavailable|endpoint.*not found|cooldown/i.test(msg);
+        };
+
+        // Attempt streaming with automatic fallback to a different ready model
+        // if the selected concrete model fails with a recoverable error.
+        let streamError = null;
+        let streamDone = false;
+
+        const attemptStream = async (modelToTry, isRetry = false) => {
+          streamError = null;
+          streamDone = false;
+          if (isRetry) {
+            // Notify client that we switched models
+            res.write(`data: ${JSON.stringify({ selectedModel: modelToTry, retried: true })}\n\n`);
+          }
+          return new Promise((resolve) => {
+            provider.streamChat({
+              messages: messagesForModel,
+              model: modelToTry,
+              temperature,
+              signal: abortController.signal,
+              onRoutedVia: (routedVia) => writeStreamEvent({ routedVia }),
+              onModel: (activeModel) => writeStreamEvent({ model: activeModel, task: taskType }),
+              onReasoning: (reasoning) => writeStreamEvent({ reasoning }),
+              onToken: (token) => writeStreamEvent({ token }),
+              onDone: () => {
+                streamDone = true;
+                if (!res.writableEnded) {
+                  res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+                  res.end();
+                }
+                resolve('done');
+              },
+              onError: (err) => {
+                streamError = err;
+                resolve('error');
+              },
+            }).catch((err) => {
+              streamError = err;
+              resolve('error');
+            });
+          });
+        };
+
+        const firstResult = await attemptStream(selectedModel, false);
+
+        // If the first attempt failed with a recoverable error AND a concrete model
+        // was explicitly selected (not auto/fusion), try once more with a different model.
+        if (firstResult === 'error' && streamError && !res.writableEnded &&
+            isRecoverableModelError(streamError) &&
+            selectedModel !== 'auto' && selectedModel !== 'fusion' &&
+            !selectedModel.startsWith('auto:')) {
+
+          console.warn(`[API Router] Model "${selectedModel}" failed (${streamError.message}); attempting fallback to another ready model.`);
+
+          let fallbackModels = [];
+          try {
+            // Re-fetch live ready models — bypasses any in-memory stale list
+            fallbackModels = await provider.getModels({ readyOnly: true });
+          } catch (_) {
+            // If discovery fails during retry, fall through to the original error
+          }
+
+          // Exclude the failed model so we don't retry the same one
+          const candidates = fallbackModels.filter((m) => m !== selectedModel);
+
+          if (candidates.length > 0) {
+            let fallbackModel;
+            try {
+              fallbackModel = chooseRandomModel(candidates);
+            } catch (_) {
+              fallbackModel = null;
             }
-          },
-          onError: (err) => {
-            if (!res.writableEnded) {
-              res.write(`data: ${JSON.stringify({ error: provider.formatError(err) })}\n\n`);
-              res.end();
+
+            if (fallbackModel) {
+              const retryResult = await attemptStream(fallbackModel, true);
+              if (retryResult === 'error' && streamError && !res.writableEnded) {
+                // Both attempts failed — surface the final error
+                res.write(`data: ${JSON.stringify({ error: provider.formatError(streamError) })}\n\n`);
+                res.end();
+              }
+              return true;
             }
-          },
-        });
+          }
+
+          // No candidates or fallback selection failed — surface original error
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ error: provider.formatError(streamError) })}\n\n`);
+            res.end();
+          }
+        } else if (firstResult === 'error' && streamError && !res.writableEnded) {
+          // Non-recoverable error or auto/fusion model — surface immediately
+          res.write(`data: ${JSON.stringify({ error: provider.formatError(streamError) })}\n\n`);
+          res.end();
+        }
       } catch {
         if (!res.writableEnded) {
           res.end();
         }
       }
       return true;
+
     } else {
       try {
         const result = await provider.chat({
           messages: messagesForModel,
-          model,
+          model: selectedModel,
           temperature,
           signal: abortController.signal,
         });
@@ -1027,6 +1162,8 @@ export async function handleApiRequest(req, res, customProvider) {
           message: cleanMessage,
           recalled: recalledData,
           memorySaved: autoSavedMemories,
+          selectedModel,
+          routedVia: result.routedVia || null,
         });
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: provider.formatError(err) });

@@ -535,6 +535,11 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
   const [settingsApiKey, setSettingsApiKey] = useState('');
   const [settingsModel, setSettingsModel] = useState('');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsLoadError, setModelsLoadError] = useState('');
+  const [lastSelectedModel, setLastSelectedModel] = useState('');
+  const [lastRoutedVia, setLastRoutedVia] = useState('');
+  const settingsModelRef = useRef(settingsModel);
   const [modelRoutingMode, setModelRoutingMode] = useState<'auto' | 'manual'>('auto');
   const [taskModels, setTaskModels] = useState<Partial<Record<'reasoning' | 'coding' | 'vision' | 'research' | 'assistant', string>>>({});
   const [settingsApiKeySet, setSettingsApiKeySet] = useState(false);
@@ -548,25 +553,48 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
   const [settingsSaveMsg, setSettingsSaveMsg] = useState<{ text: string; error?: boolean } | null>(null);
   const [settingsTab, setSettingsTab] = useState<'general' | 'extensions'>('general');
 
+  const refreshAvailableModels = useCallback(async () => {
+    setModelsLoading(true);
+    try {
+      const models = await fetchAvailableModels();
+      setAvailableModels(models);
+      const currentSelection = settingsModelRef.current;
+      if (currentSelection && currentSelection.toLowerCase() !== 'auto' && !models.includes(currentSelection)) {
+        settingsModelRef.current = 'auto';
+        setSettingsModel('auto');
+        setModelsLoadError(models.length
+          ? `Saved model "${currentSelection}" is no longer ready. Auto is selected in this form; save settings to apply it.`
+          : `Saved model "${currentSelection}" could not be verified. Auto is selected in this form; refresh models and save settings.`);
+      } else {
+        setModelsLoadError(models.length ? '' : 'No ready models were returned. Check that FreeLLMAPI is running and has enabled, usable model keys.');
+      }
+    } catch {
+      setAvailableModels([]);
+      setModelsLoadError('Could not verify the live FreeLLMAPI model list.');
+    } finally {
+      setModelsLoading(false);
+    }
+  }, []);
+
   const loadSettingsData = useCallback(async () => {
     try {
       const s = await getSettings();
       setSettingsBaseUrl(s.baseUrl || '');
       setSettingsApiKey(s.apiKeyMasked || '');
       setSettingsApiKeySet(Boolean(s.apiKeySet));
-      setSettingsModel(s.model || '');
+      settingsModelRef.current = s.model || 'auto';
+      setSettingsModel(settingsModelRef.current);
       setModelRoutingMode(s.modelRoutingMode === 'manual' ? 'manual' : 'auto');
       setTaskModels(s.taskModels || {});
-      const models = await fetchAvailableModels();
-      setAvailableModels(models);
       setAutoDeleteChats(Boolean(s.autoDeleteChats));
       setChatRetentionDays(Math.max(1, Number(s.chatRetentionDays) || 30));
       setPermissionAllowance(s.permissionAllowance || 'full_access');
       setCopilotSecurityMode(s.copilotSecurityMode || 'strict');
+      await refreshAvailableModels();
     } catch {
-      // ignore
+      // Keep the current form values if settings cannot be loaded.
     }
-  }, []);
+  }, [refreshAvailableModels]);
 
   useEffect(() => {
     if (settingsOpen) {
@@ -1048,6 +1076,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
     };
 
     let accumulatedContent = '';
+    let selectedModelForTurn: string | undefined;
     let onDoneHandled = false;
     let abortFallbackHandled = false;
 
@@ -1083,6 +1112,14 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
         taskType: requestTaskType,
         recallMemory: true,
         currentChatId: activeChatIdRef.current,
+        onModel: (modelId) => {
+          selectedModelForTurn = modelId;
+          setLastSelectedModel(modelId);
+          setLastRoutedVia('');
+        },
+        onRoutedVia: (route) => {
+          setLastRoutedVia(route);
+        },
         onRecall: (recalled) => {
           setLastRecalled(recalled);
           const totalRecalled = (recalled?.memories?.length || 0) + (recalled?.excerpts?.length || 0);
@@ -1278,10 +1315,18 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
             await streamChatMessage(
               followUpMessages as any,
               {
+                model: selectedModelForTurn,
                 signal: abortController.signal,
                 taskType: requestTaskType,
                 recallMemory: false,
                 currentChatId: activeChatIdRef.current,
+                onModel: (modelId) => {
+                  selectedModelForTurn = modelId;
+                  setLastSelectedModel(modelId);
+                },
+                onRoutedVia: (route) => {
+                  setLastRoutedVia(route);
+                },
                 onToken: (tok) => {
                   if (abortController.signal.aborted) return;
                   followUpAccumulated += tok;
@@ -1649,7 +1694,12 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
           <div className="flex items-center justify-between px-1 text-[10px] font-mono-terminal text-[#71717A]">
             <div className="flex items-center gap-1.5">
               <span className={`w-1.5 h-1.5 rounded-full ${gatewayStatus.ok ? 'bg-[#00D99A]' : 'bg-[#FF981F]'}`} />
-              <span className="truncate max-w-[130px]">{gatewayStatus.model || 'auto'}</span>
+              <span
+                className="truncate max-w-[130px]"
+                title={lastRoutedVia ? 'Actual FreeLLMAPI route' : lastSelectedModel ? 'Model selected for this turn' : 'Configured model'}
+              >
+                {lastRoutedVia || lastSelectedModel || gatewayStatus.model || 'auto'}
+              </span>
             </div>
             <span className={gatewayStatus.ok ? 'text-[#00D99A]' : 'text-[#FF981F]'}>
               {gatewayStatus.ok ? 'Online' : 'Standby'}
@@ -2438,21 +2488,42 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
               </p>
             </div>
 
-            {/* Model Name */}
+            {/* Live-verified model selector */}
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                Model Name (Optional)
-              </label>
-              <input
-                type="text"
-                value={settingsModel}
-                onChange={(e) => setSettingsModel(e.target.value)}
-                placeholder="e.g. gpt-4o, claude-3-5-sonnet, deepseek-chat, or leave blank"
-                className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-cyan-500/60 font-mono"
-              />
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-medium text-slate-300">
+                  Model Selection
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void refreshAvailableModels()}
+                  disabled={modelsLoading}
+                  className="text-[11px] text-cyan-300 hover:text-cyan-200 disabled:opacity-50"
+                >
+                  {modelsLoading ? 'Checking…' : 'Refresh models'}
+                </button>
+              </div>
+              <select
+                value={settingsModel || 'auto'}
+                onChange={(e) => {
+                  settingsModelRef.current = e.target.value;
+                  setSettingsModel(e.target.value);
+                  setModelsLoadError(availableModels.length ? '' : modelsLoadError);
+                }}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white text-xs focus:outline-none focus:border-cyan-500/60 font-mono"
+              >
+                <option value="auto">Auto — random ready model</option>
+                {availableModels.map((modelId) => (
+                  <option key={modelId} value={modelId}>{modelId}</option>
+                ))}
+              </select>
               <p className="text-[11px] text-slate-500 mt-1">
-                Leave blank or set to &apos;auto&apos; to let the gateway automatically select the model.
+                Auto randomly selects one currently ready concrete model per new text turn. Vision requests use FreeLLMAPI Auto routing.
+                {availableModels.length > 0 ? ` ${availableModels.length} ready model(s) verified.` : ''}
               </p>
+              {modelsLoadError && (
+                <p className="text-[11px] text-amber-300 mt-1">{modelsLoadError}</p>
+              )}
             </div>
 
             {/* Task-aware model routing */}
@@ -2501,13 +2572,14 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
                 Model names are only capability hints; providers do not always expose capability metadata. Check the bottom status bar during a request to see the model FreeLLMAPI reports. An explicit per-task model override should name a model that supports that task.
               </p>
               <div className="flex items-center justify-between gap-3">
-                <span className="text-[10px] text-slate-500">{availableModels.length} model IDs discovered</span>
+                <span className="text-[10px] text-slate-500">{availableModels.length} ready model(s) verified</span>
                 <button
                   type="button"
-                  onClick={async () => setAvailableModels(await fetchAvailableModels())}
-                  className="px-2.5 py-1.5 rounded-lg border border-white/10 text-[10px] text-slate-300 hover:bg-white/[0.06]"
+                  onClick={() => void refreshAvailableModels()}
+                  disabled={modelsLoading}
+                  className="px-2.5 py-1.5 rounded-lg border border-white/10 text-[10px] text-slate-300 hover:bg-white/[0.06] disabled:opacity-50"
                 >
-                  Refresh model list
+                  {modelsLoading ? 'Checking…' : 'Refresh model list'}
                 </button>
               </div>
             </div>

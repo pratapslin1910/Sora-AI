@@ -41,7 +41,7 @@ describe('FreeLLMAPIProvider Unit & Mock Tests', () => {
           data: [
             { id: 'auto' },
             { id: 'fusion' },
-            { id: 'qwen-3.8-27b' },
+            { id: 'qwen-3.8-27b', execution_status: 'ready' },
           ]
         }));
         return;
@@ -359,6 +359,11 @@ describe('API Router Integration Tests', () => {
       apiKey: 'valid_key',
     });
 
+    // Stub getModels so model validation in apiRouter passes without hitting
+    // the mock HTTP server's /models endpoint (which is not served).
+    // The single model returned is what the mock chat completion server streams.
+    provider.getModels = async ({ readyOnly = false } = {}) => ['test-model'];
+
     const reqEvents = {};
     const req = {
       method: 'POST',
@@ -369,6 +374,7 @@ describe('API Router Integration Tests', () => {
         if (event === 'data') {
           handler(Buffer.from(JSON.stringify({
             messages: [{ role: 'user', content: 'Ping' }],
+            model: 'test-model',
             stream: true,
           })));
         }

@@ -41,14 +41,15 @@ export async function checkGatewayHealth(): Promise<GatewayHealth> {
 }
 
 export async function fetchAvailableModels(): Promise<string[]> {
-  try {
-    const res = await fetch('/api/models');
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data?.models || [];
-  } catch {
-    return [];
+  const res = await fetch('/api/models');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || `Model discovery failed (HTTP ${res.status}).`);
   }
+  if (!Array.isArray(data?.models)) {
+    throw new Error('The gateway returned an invalid available-model list.');
+  }
+  return data.models.filter((model: unknown): model is string => typeof model === 'string' && model.trim().length > 0);
 }
 
 export interface GatewaySettings {
@@ -137,6 +138,8 @@ export interface StreamChatOptions {
   signal?: AbortSignal;
   recallMemory?: boolean;
   currentChatId?: string | null;
+  onModel?: (model: string) => void;
+  onRoutedVia?: (route: string) => void;
   onRecall?: (recalled: RecalledContextPayload) => void;
   onMemorySaved?: (memories: MemoryItem[]) => void;
   onReasoning?: (thought: string) => void;
@@ -155,6 +158,8 @@ export async function streamChatMessage(
     signal,
     recallMemory = true,
     currentChatId = null,
+    onModel,
+    onRoutedVia,
     onRecall,
     onMemorySaved,
     onReasoning,
@@ -239,9 +244,19 @@ export async function streamChatMessage(
           if (payload.memorySaved && onMemorySaved) {
             onMemorySaved(payload.memorySaved);
           }
+          if (typeof payload.selectedModel === 'string' && payload.selectedModel) {
+            lastReportedModel = payload.selectedModel;
+            emitModelActivity('model', { model: payload.selectedModel, task: payload.task || taskType });
+            onModel?.(payload.selectedModel);
+          }
+          if (typeof payload.routedVia === 'string' && payload.routedVia) {
+            emitModelActivity('routedVia', { routedVia: payload.routedVia });
+            onRoutedVia?.(payload.routedVia);
+          }
           if (typeof payload.model === 'string' && payload.model) {
             lastReportedModel = payload.model;
             emitModelActivity('model', { model: payload.model, task: payload.task || taskType });
+            onModel?.(payload.model);
           }
           if (payload.reasoning && onReasoning) {
             onReasoning(payload.reasoning);
@@ -276,9 +291,19 @@ export async function streamChatMessage(
         if (payload.memorySaved && onMemorySaved) {
           onMemorySaved(payload.memorySaved);
         }
+        if (typeof payload.selectedModel === 'string' && payload.selectedModel) {
+          lastReportedModel = payload.selectedModel;
+          emitModelActivity('model', { model: payload.selectedModel, task: payload.task || taskType });
+          onModel?.(payload.selectedModel);
+        }
+        if (typeof payload.routedVia === 'string' && payload.routedVia) {
+          emitModelActivity('routedVia', { routedVia: payload.routedVia });
+          onRoutedVia?.(payload.routedVia);
+        }
         if (typeof payload.model === 'string' && payload.model) {
           lastReportedModel = payload.model;
           emitModelActivity('model', { model: payload.model, task: payload.task || taskType });
+          onModel?.(payload.model);
         }
         if (payload.reasoning && onReasoning) {
           onReasoning(payload.reasoning);
