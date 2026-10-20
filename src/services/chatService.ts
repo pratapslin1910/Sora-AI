@@ -169,7 +169,7 @@ export async function streamChatMessage(
   } = options;
 
   let lastReportedModel = model || 'auto';
-  const emitModelActivity = (type: 'start' | 'model' | 'done' | 'error', extra: Record<string, unknown> = {}) => {
+  const emitModelActivity = (type: 'start' | 'model' | 'routedVia' | 'done' | 'error', extra: Record<string, unknown> = {}) => {
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('sora:model-activity', {
         detail: { type, model: lastReportedModel, task: taskType, ...extra },
@@ -763,7 +763,7 @@ async function getIdeExecutionToken(): Promise<string> {
   const result = await res.json();
   if (typeof result.token !== 'string' || !result.token) throw new Error('Invalid terminal execution token response.');
   cachedIdeExecutionToken = result.token;
-  return cachedIdeExecutionToken;
+  return result.token;
 }
 
 export async function executeTerminalCommand(command: string, cwd?: string): Promise<TerminalExecResult> {

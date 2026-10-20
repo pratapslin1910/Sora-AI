@@ -1298,7 +1298,7 @@ const SoraChat = ({ initialPrompt, onClearInitialPrompt, settingsOpen = false, o
               return m;
             });
 
-            const toolNames = toolCalls.map((call) => call.tool).join(', ');
+            const toolNames = toolCalls.map((call: { tool: string }) => call.tool).join(', ');
             const followUpMessages = [
               ...sanitizedPriorMessages,
               {

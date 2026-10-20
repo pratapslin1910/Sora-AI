@@ -8,7 +8,8 @@
     "build": "vite build",
     "lint": "oxlint",
     "test": "node test/run-unit-tests.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",

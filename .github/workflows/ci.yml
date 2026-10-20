@@ -24,6 +24,9 @@ jobs:
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
 
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
       - name: Lint
         run: npm run lint
 
